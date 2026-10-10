@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   AlertTriangle,
@@ -23,6 +23,7 @@ import { DOMAINS, MAX_CYCLES } from '../types/agent';
 import type { AgentRunResponse, AgentStreamEvent, CriticReport, Domain, NodeId, NodeTrace, PlanStep, ResearchStatus, ResolutionMethod } from '../types/agent';
 import { EXAMPLES } from '../data/presets';
 import ResearchReport, { CriticBadge, ResearchBadge } from './ResearchReport';
+import HeroBanner from './HeroBanner';
 
 interface NodeMeta {
   id: NodeId;
@@ -120,6 +121,7 @@ const inputClass = 'mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-95
 const labelClass = 'text-xs font-medium uppercase tracking-wide text-slate-500';
 
 export default function AgentSimulator() {
+  const companyInput = useRef<HTMLInputElement>(null);
   const [company, setCompany] = useState(EXAMPLES[0].company);
   const [url, setUrl] = useState(EXAMPLES[0].url);
   const [goal, setGoal] = useState(EXAMPLES[0].goal);
@@ -203,6 +205,8 @@ export default function AgentSimulator() {
 
   return (
     <div className="space-y-6">
+      {/* After dismissal, keyboard focus moves to the form instead of falling back to <body>. */}
+      <HeroBanner onDismiss={() => companyInput.current?.focus()} />
       {/* grid-cols-1 + min-w-0 keep wide children (the DAG svg) scrolling inside their box instead of widening the page. */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Controls */}
@@ -229,7 +233,7 @@ export default function AgentSimulator() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <label className="block">
               <span className={labelClass}>Company</span>
-              <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. Stripe" maxLength={120} disabled={running} className={inputClass} />
+              <input ref={companyInput} value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. Stripe" maxLength={120} disabled={running} className={inputClass} />
             </label>
             <label className="block">
               <span className={labelClass}>Public URL (primary source)</span>
