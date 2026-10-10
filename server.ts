@@ -197,7 +197,7 @@ async function callGemini(prompt: string, options: { json?: boolean; timeoutMs: 
 }
 
 /** Parses model JSON (tolerating markdown fences) and validates it; throws on any mismatch. */
-function parseJson<T>(text: string, schema: z.ZodType<T>): T {
+function parseJson<T>(text: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): T {
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
   const result = schema.safeParse(JSON.parse(cleaned));
   if (!result.success) {

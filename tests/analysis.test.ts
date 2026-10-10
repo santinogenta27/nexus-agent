@@ -325,6 +325,25 @@ describe('hypothesis verdicts and critic coherence', () => {
     }
   });
 
+  it('normalises missingEvidence returned as a single string (regression: Gemini answer rejected by the schema)', () => {
+    const { synthesis } = setup(liveResearch());
+    const parse = (missingEvidence: unknown) =>
+      SynthesisSchema.safeParse({ ...synthesis, hypothesisVerdicts: [{ id: 'H2', verdict: 'partially_supported', confidence: 'low', rationale: 'r', evidenceIds: ['E3'], missingEvidence }] });
+    const asString = parse('No enterprise price is published');
+    assert.ok(asString.success, asString.success ? '' : JSON.stringify(asString.error.issues));
+    assert.deepEqual(asString.success && asString.data.hypothesisVerdicts[0].missingEvidence, ['No enterprise price is published']);
+    const empty = parse('   ');
+    assert.deepEqual(empty.success && empty.data.hypothesisVerdicts[0].missingEvidence, []);
+    const long = parse('x'.repeat(260));
+    assert.equal(long.success && long.data.hypothesisVerdicts[0].missingEvidence?.[0].length, 200);
+    // Lists and an omitted field behave exactly as before.
+    const list = parse(['a', 'b']);
+    assert.deepEqual(list.success && list.data.hypothesisVerdicts[0].missingEvidence, ['a', 'b']);
+    const omitted = parse(undefined);
+    assert.equal(omitted.success && omitted.data.hypothesisVerdicts[0].missingEvidence, undefined);
+    assert.equal(parse(42).success, false, 'other types are still rejected');
+  });
+
   it('accepts a coherent partially_supported verdict with supporting and contradicting evidence', () => {
     const { check: c5 } = withVerdict({ id: 'H2', verdict: 'partially_supported', confidence: 'medium', rationale: 'Prices are published but custom pricing exists.', evidenceIds: ['E3'], contradictingEvidenceIds: ['E5'], missingEvidence: [] });
     assert.equal(c5?.status, 'pass', c5?.detail);

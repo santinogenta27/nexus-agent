@@ -221,6 +221,13 @@ export interface SandboxResult {
 
 const EvidenceIds = z.array(z.string().max(12)).max(12);
 
+/** "x" → ["x"], "" → [], longer than 200 chars → cut to 200; arrays and undefined pass through unchanged. */
+export function normaliseStringList(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed ? [trimmed.slice(0, 200)] : [];
+}
+
 /** Shape the Synthesizer LLM must return. Lists of evidence, prices and sources are attached by code. */
 export const SynthesisSchema = z.object({
   executiveSummary: z.string().min(1).max(1800),
@@ -241,7 +248,8 @@ export const SynthesisSchema = z.object({
         /** Supporting evidence ids. */
         evidenceIds: EvidenceIds,
         contradictingEvidenceIds: EvidenceIds.optional(),
-        missingEvidence: z.array(z.string().min(1).max(200)).max(6).optional(),
+        // Models sometimes return a single string instead of a list; normalise it rather than reject the whole answer.
+        missingEvidence: z.preprocess(normaliseStringList, z.array(z.string().min(1).max(200)).max(6).optional()),
       }),
     )
     .max(3),
