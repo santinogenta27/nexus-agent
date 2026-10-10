@@ -4,8 +4,7 @@ import type { HealthResponse } from '../types/agent';
 
 export type TabId = 'simulator' | 'architecture';
 
-// Replace with the project's repository URL.
-const GITHUB_URL = 'https://github.com';
+const GITHUB_URL = 'https://github.com/santinogenta27/nexus-agent';
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'simulator', label: 'Agent DAG', icon: Network },
