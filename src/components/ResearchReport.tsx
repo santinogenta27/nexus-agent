@@ -106,8 +106,16 @@ export function GeminiNotice({ gemini }: { gemini: GeminiStatus }) {
 
 const VERDICT_STYLE: Record<HypothesisVerdict, string> = {
   supported: 'text-emerald-300',
+  partially_supported: 'text-amber-300',
   refuted: 'text-rose-300',
   inconclusive: 'text-slate-400',
+};
+
+const VERDICT_LABEL: Record<HypothesisVerdict, string> = {
+  supported: 'Supported',
+  partially_supported: 'Partially supported',
+  refuted: 'Refuted',
+  inconclusive: 'Inconclusive — not confirmed',
 };
 
 const CHECK_ICON: Record<CheckStatus, { icon: typeof CheckCircle2; className: string }> = {
@@ -391,12 +399,26 @@ export default function ResearchReport({ result }: { result: AgentRunResponse })
                 <div className="rounded-md bg-slate-900 p-2">
                   <dt className="text-slate-500">Verdict</dt>
                   <dd className={`mt-0.5 font-medium ${VERDICT_STYLE[h.verdict]}`}>
-                    {h.verdict === 'inconclusive' ? 'Inconclusive — not confirmed' : `${h.verdict} · ${h.verdictConfidence ?? '—'} confidence`}
+                    {h.verdict === 'inconclusive' ? VERDICT_LABEL.inconclusive : `${VERDICT_LABEL[h.verdict]} · ${h.verdictConfidence ?? '—'} confidence`}
                   </dd>
                 </div>
               </dl>
               <p className="text-xs text-slate-400">{h.verdictRationale}</p>
-              <EvidenceRefs ids={h.verdictEvidence.length ? h.verdictEvidence : h.evidenceFound} evidence={evidence} />
+              <div className="space-y-1.5 text-xs">
+                <p className="text-slate-500">{h.verdict === 'inconclusive' ? 'Related evidence' : 'Supporting evidence'}</p>
+                <EvidenceRefs ids={h.verdictEvidence.length ? h.verdictEvidence : h.evidenceFound} evidence={evidence} />
+                {h.verdictContradicting.length > 0 && (
+                  <>
+                    <p className="text-rose-300/80">Contradicting evidence</p>
+                    <EvidenceRefs ids={h.verdictContradicting} evidence={evidence} />
+                  </>
+                )}
+                {h.verdictMissing.length > 0 && (
+                  <p className="text-slate-500">
+                    <span className="text-slate-400">Missing:</span> {h.verdictMissing.join('; ')}
+                  </p>
+                )}
+              </div>
               <div className="space-y-1 text-xs">
                 <p className="text-slate-500">Evidence needed</p>
                 <ul className="space-y-0.5">

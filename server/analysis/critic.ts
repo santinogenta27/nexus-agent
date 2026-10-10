@@ -81,16 +81,51 @@ const EVALUATIVE_RE = /\b(?:friction|barriers?|obstacles?|confusing|difficult|ha
 
 type Verdict = Synthesis['hypothesisVerdicts'][number];
 
-/** Why a hypothesis verdict is invalid, or null. Coverage caps confidence; an inconclusive verdict carries none. */
-function verdictProblem(v: Verdict, h: HypothesisAssessment, unknownIds: (ids: string[]) => string[]): string | null {
+/**
+ * Why a hypothesis verdict is invalid, or null. Rules:
+ * - inconclusive carries no confidence;
+ * - every cited id exists, is not cited both for and against, and relates to the hypothesis (its evidence
+ *   categories) or to a confirmed finding;
+ * - supported needs supporting evidence and none against (otherwise it is partially supported);
+ * - partially_supported needs supporting evidence plus contradicting evidence, missing evidence or incomplete
+ *   coverage, and at most medium confidence;
+ * - refuted must cite the evidence that contradicts the hypothesis;
+ * - coverage caps confidence, and no verdict other than inconclusive is allowed without relevant evidence.
+ */
+function verdictProblem(v: Verdict, h: HypothesisAssessment, unknownIds: (ids: string[]) => string[], related: Set<string>): string | null {
+  const supporting = v.evidenceIds;
+  const contradicting = v.contradictingEvidenceIds ?? [];
+  const missing = v.missingEvidence ?? [];
   if (v.verdict === 'inconclusive') return v.confidence !== null ? `${v.id} is inconclusive but states a confidence` : null;
-  if (v.evidenceIds.length === 0 || unknownIds(v.evidenceIds).length) return `${v.id} is marked ${v.verdict} without valid evidence`;
+  const cited = [...supporting, ...contradicting];
+  if (unknownIds(cited).length) return `${v.id} cites unknown evidence ${unknownIds(cited).join(', ')}`;
+  const both = supporting.filter((id) => contradicting.includes(id));
+  if (both.length) return `${v.id} cites ${both.join(', ')} both for and against the hypothesis`;
+  const unrelated = cited.filter((id) => !related.has(id));
+  if (unrelated.length) return `${v.id} cites ${unrelated.join(', ')}, which is neither evidence for this hypothesis nor cited by any confirmed finding`;
   if (h.coverage === 'none') return `${v.id} is marked ${v.verdict} although no relevant evidence was found`;
+  if (v.verdict === 'supported') {
+    if (supporting.length === 0) return `${v.id} is marked supported without valid supporting evidence`;
+    if (contradicting.length) return `${v.id} is marked supported despite contradicting evidence ${contradicting.join(', ')}; use partially_supported`;
+  }
+  if (v.verdict === 'partially_supported') {
+    if (supporting.length === 0) return `${v.id} is marked partially_supported without supporting evidence`;
+    if (contradicting.length === 0 && missing.length === 0 && h.coverage === 'complete') {
+      return `${v.id} is marked partially_supported but names no contradicting or missing evidence`;
+    }
+    if (v.confidence === 'high') return `${v.id} is partially_supported, so its confidence cannot be high`;
+  }
+  if (v.verdict === 'refuted' && contradicting.length === 0) return `${v.id} is marked refuted without citing contradicting evidence`;
   if (v.confidence === null) return `${v.id} is marked ${v.verdict} without a confidence level`;
   if (exceedsCap(v.confidence, h.maxVerdictConfidence)) {
     return `${v.id} claims ${v.confidence} confidence but its ${h.coverage} evidence coverage allows at most ${h.maxVerdictConfidence ?? 'none'}`;
   }
   return null;
+}
+
+/** Evidence a verdict may legitimately cite: the hypothesis' own category evidence plus anything a confirmed finding cites. */
+function relatedEvidence(h: HypothesisAssessment, s: Synthesis): Set<string> {
+  return new Set([...h.evidenceFound, ...s.confirmedFindings.flatMap((f) => f.evidenceIds)]);
 }
 const CAUSAL_CHURN_RE = /\b(?:causes?|caused|causing|drives?|driving|driven by|leads? to|results? in|is responsible for)\b[^.]{0,80}\bchurn\b|\bchurn\b[^.]{0,40}\b(?:is caused|is driven|because of|due to)\b/i;
 const CHURN_FIGURE_RE = /\b(?:churn|cancellation|retention|renewal) rates?\b[^.]{0,40}\d/i;
@@ -185,7 +220,7 @@ export function runDeterministicChecks(draft: ReportDraft, ctx: CriticContext): 
       c5.push(`Verdict for unknown hypothesis ${v.id}`);
       continue;
     }
-    const problem = verdictProblem(v, h, unknownIds);
+    const problem = verdictProblem(v, h, unknownIds, relatedEvidence(h, s));
     if (problem) c5.push(problem);
   }
   s.confirmedFindings.forEach((f, i) => {
@@ -311,11 +346,19 @@ export function repairDraft(draft: ReportDraft, ctx: CriticContext, baseline: Sy
     .filter((v) => hypothesisIds.has(v.id))
     .map((v) => {
       const h = draft.hypotheses.find((x) => x.id === v.id);
-      const problem = h ? verdictProblem(v, h, (ids) => ids.filter((id) => !evidenceIds.has(id))) : 'unknown hypothesis';
+      // Judged against the findings that survive repair, so a verdict cannot lean on a removed finding.
+      const problem = h ? verdictProblem(v, h, (ids) => ids.filter((id) => !evidenceIds.has(id)), relatedEvidence(h, { ...s, confirmedFindings })) : 'unknown hypothesis';
       if (!problem && grounded(v.rationale)) return v;
       if (v.verdict === 'inconclusive') return { ...v, confidence: null };
       notes.push(`${v.id} verdict downgraded to inconclusive: ${problem ?? 'its rationale contained unverifiable figures'}.`);
-      return { ...v, verdict: 'inconclusive' as const, confidence: null, rationale: 'Downgraded by the Critic: the proposed verdict was not supported by retrieved evidence.', evidenceIds: [] };
+      return {
+        ...v,
+        verdict: 'inconclusive' as const,
+        confidence: null,
+        rationale: 'Downgraded by the Critic: the proposed verdict was not supported by retrieved evidence.',
+        evidenceIds: [],
+        contradictingEvidenceIds: [],
+      };
     });
 
   let { executiveSummary, companyProfile } = s;

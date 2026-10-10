@@ -165,7 +165,8 @@ export type SupervisorOutput = z.infer<typeof SupervisorOutputSchema>;
 export type EvidenceCoverage = 'none' | 'low' | 'partial' | 'complete';
 /** Confidence in a supported/refuted verdict. Always null when the verdict is inconclusive. */
 export type VerdictConfidence = 'low' | 'medium' | 'high';
-export type HypothesisVerdict = 'supported' | 'refuted' | 'inconclusive';
+export const HYPOTHESIS_VERDICTS = ['supported', 'partially_supported', 'refuted', 'inconclusive'] as const;
+export type HypothesisVerdict = (typeof HYPOTHESIS_VERDICTS)[number];
 
 export interface HypothesisAssessment extends HypothesisDraft {
   id: string;
@@ -181,7 +182,12 @@ export interface HypothesisAssessment extends HypothesisDraft {
   verdict: HypothesisVerdict;
   verdictConfidence: VerdictConfidence | null;
   verdictRationale: string;
+  /** Evidence ids that support the hypothesis. */
   verdictEvidence: string[];
+  /** Evidence ids that contradict the hypothesis. */
+  verdictContradicting: string[];
+  /** Evidence the verdict would need but that was not found. */
+  verdictMissing: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -228,11 +234,14 @@ export const SynthesisSchema = z.object({
     .array(
       z.object({
         id: z.string(),
-        verdict: z.enum(['supported', 'refuted', 'inconclusive']),
-        /** Required for supported/refuted; must be null for inconclusive. */
+        verdict: z.enum(HYPOTHESIS_VERDICTS),
+        /** Required for supported/partially_supported/refuted; must be null for inconclusive. */
         confidence: z.enum(['low', 'medium', 'high']).nullable(),
-        rationale: z.string().min(1).max(400),
+        rationale: z.string().min(1).max(500),
+        /** Supporting evidence ids. */
         evidenceIds: EvidenceIds,
+        contradictingEvidenceIds: EvidenceIds.optional(),
+        missingEvidence: z.array(z.string().min(1).max(200)).max(6).optional(),
       }),
     )
     .max(3),

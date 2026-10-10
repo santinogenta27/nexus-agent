@@ -48,6 +48,18 @@ import {
   sanitizeModelContext,
 } from './server/agent/deductive.ts';
 import { LlmUnavailableError, QuotaGuard, classifyLlmError, failureLabel, isQuotaError } from './server/agent/llmErrors.ts';
+import {
+  HTTP_REQUEST_TIMEOUT_MS,
+  JUDGE_TIMEOUT_MS,
+  MODEL_CONTEXT_RESERVE_MS,
+  MODEL_CONTEXT_TIMEOUT_MS,
+  RESEARCH_BUDGET_MS,
+  REVISION_MIN_REMAINING_MS,
+  RUN_BUDGET_MS,
+  SUPERVISOR_TIMEOUT_MS,
+  SYNTHESIZER_DEADLINE_MARGIN_MS,
+  SYNTHESIZER_TIMEOUT_MS,
+} from './server/agent/budget.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -59,18 +71,6 @@ const LLM_MAX_RETRIES = 2;
 const LLM_BACKOFF_BASE_MS = 2_000;
 const RETRYABLE_STATUSES = new Set([500, 503]);
 
-/**
- * Upper bound for one run. Every LLM call is capped by its own timeout and by the time left in this budget, so the
- * 30 s Synthesizer and judge limits are real only if the budget leaves room for them after research.
- */
-const RUN_BUDGET_MS = 90_000;
-const SUPERVISOR_TIMEOUT_MS = 12_000;
-const SYNTHESIZER_TIMEOUT_MS = 30_000;
-const JUDGE_TIMEOUT_MS = 30_000;
-/** Background-knowledge request, only made when web retrieval could not provide enough content. */
-const MODEL_CONTEXT_TIMEOUT_MS = 15_000;
-/** Minimum time left before another synthesizer → critic revision cycle is attempted. */
-const REVISION_MIN_REMAINING_MS = 35_000;
 
 // Reference list prices (USD per 1M tokens) for a Flash-class model. Free Tier usage is billed $0;
 // the telemetry reports what the same run would cost on the paid tier.
@@ -448,12 +448,19 @@ function synthesizerPrompt(args: {
     '- A "Contact sales" or "Request a demo" phrase marked GENERIC-CTA is a header/button and is NOT evidence of friction. Only phrases tied to a plan, price or product may support a friction inference, and even then present it as a hypothesis.',
     '- risks and opportunities are potential effects, not facts: say they are unverified.',
     '- openQuestions: what the evidence cannot answer.',
-    '- hypothesisVerdicts: one per hypothesis (H1..H3): "supported", "refuted" or "inconclusive", with rationale and evidence ids. Evidence coverage is not confidence: coverage only caps it. confidence must be null for "inconclusive" and must not exceed the stated max verdict confidence. Use "inconclusive" when the evidence does not decide the question.',
+    '- hypothesisVerdicts: one per hypothesis (H1..H3). Weigh the evidence FOR the hypothesis, the evidence AGAINST it, and what is MISSING, then choose:',
+    '    "supported": supporting evidence and no contradicting evidence;',
+    '    "partially_supported": some supporting evidence, but also contradicting evidence or important missing evidence (confidence at most "medium");',
+    '    "refuted": the retrieved evidence contradicts the hypothesis (cite it in contradictingEvidenceIds);',
+    '    "inconclusive": not enough evidence either way (confidence null).',
+    '  evidenceIds = supporting ids, contradictingEvidenceIds = contradicting ids (never the same id in both), missingEvidence = what would be needed but was not found.',
+    '  Cite only ids from the evidence list that relate to the hypothesis or that a confirmed finding cites. The rationale must explain the choice from that evidence.',
+    '  Evidence coverage is not confidence: coverage only caps it, and confidence must not exceed the stated max verdict confidence.',
     '- Use only numbers that appear in the evidence or the sandbox metrics. Do not invent internal metrics (revenue, churn, conversion, usage).',
     '- Correlation is not causation: do not claim that one observation causes an outcome.',
     '- recommendations: actionable for the goal; each with expectedImpact (qualitative), effort, timeframe, a KPI to track, and the hypothesisId it tests.',
     'Reply with JSON only, exactly this shape:',
-    '{"executiveSummary":<string>,"companyProfile":<string>,"confirmedFindings":[{"statement":<string>,"evidenceIds":[<id>]}],"inferences":[{"statement":<string>,"reasoning":<string>,"evidenceIds":[<id>]}],"openQuestions":[<string>],"hypothesisVerdicts":[{"id":"H1","verdict":"supported"|"refuted"|"inconclusive","confidence":"low"|"medium"|"high"|null,"rationale":<string>,"evidenceIds":[<id>]}],"risks":[{"title":<string>,"detail":<string>,"priority":"P0"|"P1"|"P2","evidenceIds":[<id>]}],"opportunities":[{"title":<string>,"detail":<string>,"priority":"P0"|"P1"|"P2","evidenceIds":[<id>]}],"recommendations":[{"action":<string>,"expectedImpact":<string>,"effort":"low"|"medium"|"high","timeframe":<string>,"kpi":<string>,"hypothesisId":"H1"|"H2"|"H3"}]}',
+    '{"executiveSummary":<string>,"companyProfile":<string>,"confirmedFindings":[{"statement":<string>,"evidenceIds":[<id>]}],"inferences":[{"statement":<string>,"reasoning":<string>,"evidenceIds":[<id>]}],"openQuestions":[<string>],"hypothesisVerdicts":[{"id":"H1","verdict":"supported"|"partially_supported"|"refuted"|"inconclusive","confidence":"low"|"medium"|"high"|null,"rationale":<string>,"evidenceIds":[<id>],"contradictingEvidenceIds":[<id>],"missingEvidence":[<string>]}],"risks":[{"title":<string>,"detail":<string>,"priority":"P0"|"P1"|"P2","evidenceIds":[<id>]}],"opportunities":[{"title":<string>,"detail":<string>,"priority":"P0"|"P1"|"P2","evidenceIds":[<id>]}],"recommendations":[{"action":<string>,"expectedImpact":<string>,"effort":"low"|"medium"|"high","timeframe":<string>,"kpi":<string>,"hypothesisId":"H1"|"H2"|"H3"}]}',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -579,7 +586,7 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
           company: input.company,
           url: input.url,
           domainGuess: supervisor.value.officialDomainGuess,
-          budgetMs: Math.max(3_000, Math.min(RESEARCH_DEFAULTS.budgetMs, remaining() - 12_000)),
+          budgetMs: Math.max(3_000, Math.min(RESEARCH_BUDGET_MS, remaining() - 12_000)),
         })) as ResearchOutput,
         usage: { inputTokens: 0, outputTokens: 0 },
       }),
@@ -601,7 +608,7 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
       modelContext = { status: 'unavailable', reason: `${contextReason}. ${failureLabel('not_configured')}; no model background was added.`, statements: [], failureKind: 'not_configured' };
     } else {
       try {
-        const result = await callGemini(modelContextPrompt(research.target.company || company, input.goal), { timeoutMs: MODEL_CONTEXT_TIMEOUT_MS, deadline: ctx.deadline - 45_000 });
+        const result = await callGemini(modelContextPrompt(research.target.company || company, input.goal), { timeoutMs: MODEL_CONTEXT_TIMEOUT_MS, deadline: ctx.deadline - MODEL_CONTEXT_RESERVE_MS });
         modelContextUsage = result;
         ctx.llmCalls += 1;
         const statements = sanitizeModelContext(result.text);
@@ -649,7 +656,7 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
         genai && research.status !== 'fallback'
           ? async () => {
               const prompt = synthesizerPrompt({ input, research, hypotheses, sandbox, churn, feedback });
-              const result = await callGemini(prompt, { json: true, timeoutMs: SYNTHESIZER_TIMEOUT_MS, deadline: ctx.deadline - 4_000 });
+              const result = await callGemini(prompt, { json: true, timeoutMs: SYNTHESIZER_TIMEOUT_MS, deadline: ctx.deadline - SYNTHESIZER_DEADLINE_MARGIN_MS });
               return { value: parseJson(result.text, SynthesisSchema), usage: result };
             }
           : null,
@@ -883,7 +890,9 @@ if (IS_PRODUCTION) {
   app.use(vite.middlewares);
 }
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`NexusAgent running on http://localhost:${PORT} (${IS_PRODUCTION ? 'production' : 'development'})`);
   console.log(`Gemini: ${GEMINI_API_KEY ? `configured (${GEMINI_MODEL})` : 'not configured — deterministic fallback engine active'}`);
 });
+// A full run can take up to RUN_BUDGET_MS; never let the HTTP layer cut a non-streaming request off before that.
+httpServer.requestTimeout = Math.max(httpServer.requestTimeout, HTTP_REQUEST_TIMEOUT_MS);

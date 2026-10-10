@@ -182,6 +182,11 @@ describe('parsePriceCard', () => {
     assert.deepEqual(prices.map((p) => [p.item, p.unit, p.period]), [['Plus', 'seat', 'month']]);
   });
 
+  it('keeps a stated scope after the period as the unit, so per-project add-ons are not read as plan prices', () => {
+    const { prices } = parsePriceCard(card(['$75 per month for first project'], 'Auth'), 'E10');
+    assert.deepEqual(prices.map((p) => [p.amount, p.period, p.unit]), [[75, 'month', 'first project']]);
+  });
+
   it('keeps "Starting at" and contract length as terms, not as the line item', () => {
     const { prices } = parsePriceCard(card(['Starting at $620.00', 'per month, 1-year contract'], 'Billing'), 'E9');
     assert.deepEqual(prices.map((p) => [p.item, p.period, p.terms]), [[null, 'month', ['Starting at', '1-year contract']]]);

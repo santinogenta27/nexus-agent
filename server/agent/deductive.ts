@@ -148,6 +148,8 @@ export function assessHypotheses(drafts: HypothesisDraft[], research: ResearchRe
       verdictConfidence: null,
       verdictRationale: 'Not yet evaluated.',
       verdictEvidence: [],
+      verdictContradicting: [],
+      verdictMissing: [],
     };
   });
 }
@@ -156,7 +158,9 @@ export function assessHypotheses(drafts: HypothesisDraft[], research: ResearchRe
 export function applyVerdicts(hypotheses: HypothesisAssessment[], verdicts: Synthesis['hypothesisVerdicts']): HypothesisAssessment[] {
   return hypotheses.map((h) => {
     const v = verdicts.find((x) => x.id === h.id);
-    if (!v) return { ...h, verdict: 'inconclusive', verdictConfidence: null, verdictRationale: 'No verdict was produced.', verdictEvidence: [] };
+    if (!v) {
+      return { ...h, verdict: 'inconclusive', verdictConfidence: null, verdictRationale: 'No verdict was produced.', verdictEvidence: [], verdictContradicting: [], verdictMissing: h.categoriesMissing };
+    }
     return {
       ...h,
       verdict: v.verdict,
@@ -164,6 +168,8 @@ export function applyVerdicts(hypotheses: HypothesisAssessment[], verdicts: Synt
       verdictConfidence: v.verdict === 'inconclusive' ? null : v.confidence,
       verdictRationale: v.rationale,
       verdictEvidence: v.evidenceIds,
+      verdictContradicting: v.contradictingEvidenceIds ?? [],
+      verdictMissing: v.missingEvidence ?? [],
     };
   });
 }
@@ -351,6 +357,7 @@ export function deterministicSynthesis(args: {
       confidence: null,
       rationale: `Not evaluated: the deterministic engine measures evidence coverage (${h.coverage}) only; supporting or refuting the hypothesis needs LLM or analyst review.`,
       evidenceIds: h.evidenceFound.slice(0, 6),
+      missingEvidence: h.categoriesMissing.slice(0, 6),
     })),
     risks,
     opportunities,

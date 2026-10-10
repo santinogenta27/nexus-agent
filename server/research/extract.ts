@@ -320,8 +320,12 @@ function rateContext(card: PriceCard, matchLine: string, tokenStart: number, tok
       // Prefix match tolerates text glued by markup, e.g. "seat/monthSign up".
       const word = /^(month|year|annum)|^(mo|yr)\b/i.exec(part)?.[0].toLowerCase();
       const p = word ? PERIOD_WORD[word] : undefined;
-      if (p && !period) period = p;
-      else if (!p && !unit) unit = part;
+      if (p && !period) {
+        period = p;
+        // A stated scope after the period is the billing unit: "$75 per month for first project" → "first project".
+        const scope = /^\s*(?:for|each)\s+(?:the\s+|each\s+)?([a-z][a-z0-9 ,'-]{1,40})$/i.exec(part.slice(word?.length ?? 0));
+        if (scope && !unit) unit = scope[1].trim();
+      } else if (!p && !unit) unit = part;
     }
   }
   if (!period && singlePrice) {

@@ -61,7 +61,9 @@ Research status is **Live** (all sources retrieved), **Partial** (some failed/em
 
 ## Limits
 
-- Run budget 90 s; LLM calls are capped by their own limit and the time left (Supervisor 12 s, Synthesizer 30 s, judge 30 s, model background 15 s); 500/503 retried twice (2 s, 4 s) if time remains; local 15 RPM / 1,500 RPD guard.
+- Run budget 120 s, derived from the step limits so no step cuts the next one short (Supervisor 12 s + research 22 s + Synthesizer 50 s + judge 30 s + 6 s margin; model background 15 s only when needed). 500/503 retried twice (2 s, 4 s) if time remains; local 15 RPM / 1,500 RPD guard. The HTTP request timeout is set above the run budget.
+- Hypothesis verdicts: `supported`, `partially_supported`, `refuted` or `inconclusive`, each with supporting, contradicting and missing evidence; the Critic rejects verdicts whose citations do not match.
+- Price levels (M2–M5) only compare recurring prices with the same currency, stated unit, product family and role; add-ons are never compared.
 - HTTP 429 (quota exhausted) is never retried: further Gemini calls are skipped for 60 s and the affected steps fall back.
 - Cost uses reference list prices ($0.30 / $2.50 per 1M input/output tokens); Free Tier usage is billed $0.
 

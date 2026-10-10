@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiError } from '@google/genai';
 import type { Evidence, PriceObservation, ResearchResult } from '../src/types/agent.ts';
-import { executeSandbox, referenceMetrics } from '../server/analysis/sandbox.ts';
+import { comparableRecurringPrices, executeSandbox, referenceMetrics } from '../server/analysis/sandbox.ts';
+import { SynthesisSchema } from '../src/types/agent.ts';
 import { repairDraft, runDeterministicChecks, summarizeCritic } from '../server/analysis/critic.ts';
 import type { CriticContext, ReportDraft } from '../server/analysis/critic.ts';
 import { applyVerdicts, assessHypotheses, churnAssessment, defaultHypotheses, deterministicSynthesis, modelContextReason, sanitizeModelContext } from '../server/agent/deductive.ts';
@@ -244,6 +245,130 @@ describe('critic', () => {
     const result = runDeterministicChecks(draft, ctx);
     assert.equal(result.checks.find((c) => c.id === 'C1')?.status, 'fail');
     assert.equal(summarizeCritic(result, 'fallback', 'unavailable').status, 'pass_with_limitations');
+  });
+});
+
+describe('sandbox price levels (M2–M5) compare only compatible recurring prices', () => {
+  const levels = (prices: PriceObservation[]) => {
+    const research = liveResearch();
+    research.prices = prices;
+    const sandbox = executeSandbox(research);
+    const get = (id: string) => sandbox.metrics.find((m) => m.id === id);
+    const reference = referenceMetrics(sandbox.input);
+    for (const id of ['M2', 'M3', 'M4', 'M5']) assert.equal(get(id)?.value, reference.get(id), `${id} sandbox = reference`);
+    return { M2: get('M2'), M3: get('M3'), M4: get('M4'), M5: get('M5') };
+  };
+
+  it('never mixes billing units (member, seat, domain, credits) or add-ons', () => {
+    const m = levels([
+      price({ evidenceId: 'E3', amount: 10, product: 'Plus', unit: 'member', period: 'month' }),
+      price({ evidenceId: 'E3', amount: 20, product: 'Business', unit: 'member', period: 'month' }),
+      price({ evidenceId: 'E4', amount: 240, product: 'Enterprise', unit: 'member', period: 'year' }),
+      price({ evidenceId: 'E4', amount: 15, product: 'Plus', unit: 'seat', period: 'month' }),
+      price({ evidenceId: 'E4', amount: 8, product: 'Sites › Custom domain', unit: 'domain', period: 'month' }),
+      price({ evidenceId: 'E4', amount: 10, product: 'Agents', unit: '1,000 credits', period: 'month' }),
+      price({ evidenceId: 'E3', amount: 5, product: 'Plus', item: 'Additional storage', period: 'month' }),
+    ]);
+    assert.deepEqual([m.M2?.value, m.M3?.value, m.M4?.value, m.M5?.value], [10, 20, 20, 2], 'member prices only; 240/year = 20/month');
+    assert.match(m.M2?.unit ?? '', /USD per member \/ month/);
+    assert.match(m.M2?.note ?? '', /Excluded 4 recurring price/);
+    assert.match(m.M2?.note ?? '', /1 add-on/);
+  });
+
+  it('does not infer a unit: "not stated" is never merged with a stated unit', () => {
+    const chosen = comparableRecurringPrices([
+      price({ evidenceId: 'E3', amount: 10, product: 'Plus', unit: null, period: 'month' }),
+      price({ evidenceId: 'E3', amount: 20, product: 'Business', unit: 'user', period: 'month' }),
+    ]);
+    assert.equal(chosen.length, 1);
+  });
+
+  it('does not compare products of different families (e.g. two different add-on product lines)', () => {
+    const chosen = comparableRecurringPrices([
+      price({ evidenceId: 'E3', amount: 620, product: 'Billing › Pay monthly', period: 'month' }),
+      price({ evidenceId: 'E4', amount: 90, product: 'Tax › Tax Complete', period: 'month' }),
+    ]);
+    assert.equal(chosen.length, 1);
+  });
+
+  it('returns insufficient_data with a reason when fewer than two prices are comparable', () => {
+    const m = levels([
+      price({ evidenceId: 'E3', amount: 10, product: 'Plus', unit: 'member', period: 'month' }),
+      price({ evidenceId: 'E4', amount: 15, product: 'Team', unit: 'seat', period: 'month' }),
+    ]);
+    assert.equal(m.M5?.status, 'insufficient_data');
+    assert.match(m.M5?.note ?? '', /Only one comparable recurring price.*2 incompatible group/);
+  });
+
+  it('returns insufficient_data when only add-ons are recurring', () => {
+    const m = levels([price({ evidenceId: 'E3', amount: 5, product: 'Plus', item: 'Extra seats add-on', period: 'month' })]);
+    for (const metric of [m.M2, m.M3, m.M4, m.M5]) {
+      assert.equal(metric?.status, 'insufficient_data');
+      assert.match(metric?.note ?? '', /Only add-on recurring prices/);
+    }
+  });
+});
+
+describe('hypothesis verdicts and critic coherence', () => {
+  type V = ReportDraft['synthesis']['hypothesisVerdicts'][number];
+  const withVerdict = (v: V) => {
+    const { draft, ctx } = setup(liveResearch());
+    const d: ReportDraft = { ...draft, synthesis: { ...draft.synthesis, hypothesisVerdicts: [v] } };
+    return { check: check(d, ctx, 'C5'), d, ctx };
+  };
+
+  it('accepts all four verdicts in the Synthesizer schema', () => {
+    const { synthesis } = setup(liveResearch());
+    for (const verdict of ['supported', 'partially_supported', 'refuted', 'inconclusive'] as const) {
+      const parsed = SynthesisSchema.safeParse({ ...synthesis, hypothesisVerdicts: [{ id: 'H1', verdict, confidence: verdict === 'inconclusive' ? null : 'low', rationale: 'r', evidenceIds: [] }] });
+      assert.ok(parsed.success, verdict);
+    }
+  });
+
+  it('accepts a coherent partially_supported verdict with supporting and contradicting evidence', () => {
+    const { check: c5 } = withVerdict({ id: 'H2', verdict: 'partially_supported', confidence: 'medium', rationale: 'Prices are published but custom pricing exists.', evidenceIds: ['E3'], contradictingEvidenceIds: ['E5'], missingEvidence: [] });
+    assert.equal(c5?.status, 'pass', c5?.detail);
+  });
+
+  it('rejects "supported" when contradicting evidence is cited', () => {
+    const { check: c5 } = withVerdict({ id: 'H2', verdict: 'supported', confidence: 'medium', rationale: 'r', evidenceIds: ['E3'], contradictingEvidenceIds: ['E5'] });
+    assert.match(c5?.detail ?? '', /use partially_supported/);
+  });
+
+  it('rejects "refuted" without contradicting evidence', () => {
+    const { check: c5 } = withVerdict({ id: 'H3', verdict: 'refuted', confidence: 'low', rationale: 'r', evidenceIds: ['E7'] });
+    assert.match(c5?.detail ?? '', /refuted without citing contradicting evidence/);
+  });
+
+  it('rejects partially_supported without contradicting or missing evidence on complete coverage, and with high confidence', () => {
+    assert.match(withVerdict({ id: 'H2', verdict: 'partially_supported', confidence: 'low', rationale: 'r', evidenceIds: ['E3'] }).check?.detail ?? '', /names no contradicting or missing evidence/);
+    assert.match(
+      withVerdict({ id: 'H2', verdict: 'partially_supported', confidence: 'high', rationale: 'r', evidenceIds: ['E3'], missingEvidence: ['Enterprise price'] }).check?.detail ?? '',
+      /cannot be high/,
+    );
+  });
+
+  it('rejects citations unrelated to the hypothesis and to every confirmed finding', () => {
+    // E8 is a generic "Contact sales" button: not product evidence and not cited by any finding.
+    assert.match(withVerdict({ id: 'H1', verdict: 'supported', confidence: 'low', rationale: 'r', evidenceIds: ['E8'] }).check?.detail ?? '', /neither evidence for this hypothesis/);
+  });
+
+  it('rejects an id cited both for and against', () => {
+    assert.match(
+      withVerdict({ id: 'H2', verdict: 'partially_supported', confidence: 'low', rationale: 'r', evidenceIds: ['E3'], contradictingEvidenceIds: ['E3'] }).check?.detail ?? '',
+      /both for and against/,
+    );
+  });
+
+  it('keeps supporting, contradicting and missing evidence on the hypothesis, and repair downgrades invalid verdicts', () => {
+    const { d, ctx, check: c5 } = withVerdict({ id: 'H2', verdict: 'supported', confidence: 'medium', rationale: 'r', evidenceIds: ['E3'], contradictingEvidenceIds: ['E5'] });
+    assert.equal(c5?.status, 'fail');
+    const applied = applyVerdicts(d.hypotheses, [{ id: 'H2', verdict: 'partially_supported', confidence: 'medium', rationale: 'r', evidenceIds: ['E3'], contradictingEvidenceIds: ['E5'], missingEvidence: ['x'] }]);
+    const h2 = applied.find((h) => h.id === 'H2');
+    assert.deepEqual([h2?.verdict, h2?.verdictEvidence, h2?.verdictContradicting, h2?.verdictMissing], ['partially_supported', ['E3'], ['E5'], ['x']]);
+    const repaired = repairDraft(d, ctx, d.synthesis);
+    const v = repaired.draft.synthesis.hypothesisVerdicts.find((x) => x.id === 'H2');
+    assert.deepEqual([v?.verdict, v?.confidence, v?.contradictingEvidenceIds], ['inconclusive', null, []]);
   });
 });
 
