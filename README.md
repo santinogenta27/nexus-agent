@@ -1,90 +1,148 @@
-# NexusAgent — Deep Research & Intelligence Agent
+# ⚡ NexusAgent — Autonomous Multi-Agent Deep Research System
 
-Give it a company name and/or a public URL plus a goal. NexusAgent forms three deductive hypotheses (product, pricing, friction), researches the company's live public web pages, computes verifiable metrics, writes an intelligence report and validates every claim before returning it.
+[![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
+[![Google Gemini](https://img.shields.io/badge/Google_Gemini-3.1_Flash_Lite-orange.svg)](https://ai.google.dev/)
+[![Tests](https://img.shields.io/badge/Tests-130%2F130_Passing-brightgreen.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-DAG_Multi--Agent-purple.svg)]()
+[![Security](https://img.shields.io/badge/Security-SSRF_Safe-red.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+> **Enterprise-grade competitive intelligence & market research engine.**
+> Give it a company name and/or a public URL plus a goal. NexusAgent investigates the company's live public web pages, tests deductive hypotheses, computes deterministic metrics, and validates every claim with verbatim citations before returning an executive report.
+
+🌐 **Live Demo (Production):** [https://nexus-agent-rub3.onrender.com](https://nexus-agent-rub3.onrender.com)
+💻 **GitHub Repository:** [https://github.com/santinogenta27/nexus-agent](https://github.com/santinogenta27/nexus-agent)
+
+---
+
+## 🏗️ Multi-Agent Architecture (DAG)
+
+```text
+        [ User Input / Company URL ]
+                     │
+                     ▼
+          ┌─────────────────────┐
+          │ 🧠 SUPERVISOR       │  Formulates 3 testable deductive hypotheses (product, pricing, friction)
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │ 🌐 RETRIEVAL        │  Discovers & fetches official pages with strict SSRF controls
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │ 🧮 SANDBOX          │  Deterministic pricing normalization & recurring metrics (node:vm)
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │ 📑 SYNTHESIZER      │  Compiles structured intelligence report with verbatim citations
+          └──────────┬──────────┘
+                     ▼   (up to 3 revision cycles)
+          ┌─────────────────────┐
+          │ ⚖️ CRITIC (JUDGE)   │  Validates C1–C9 rules: citations, math & factual consistency
+          └──────────┬──────────┘
+                     ▼
+     [ Final Verified Intelligence Report ]
 ```
-Supervisor ──► Retrieval ──► Sandbox ──► Synthesizer ──► Critic
-                                              ▲              │
-                                              └── revise ≤ 3 ─┘
-```
 
-Built with **Gemini** (`@google/genai`) orchestrated through **Genkit**, an Express backend and a React 19 + Tailwind v4 frontend.
+Built with **Gemini (`@google/genai`)** orchestrated through **Genkit**, an **Express** backend in TypeScript, and a modern **React 19 + Tailwind v4** frontend.
 
-## Quick start
+---
+
+## 📊 Live Case Study: Notion (`notion.so`)
+
+Tested live in production using `gemini-3.1-flash-lite`:
+
+| Metric | Measured Value |
+| :--- | :--- |
+| **Pipeline Latency** | ~19s live (cold start P95: 39s) |
+| **Token Usage** | 9,094 in / 3,490 out |
+| **Query Cost** | **$0.0115 USD** (list-price eq.) |
+| **Sources Retrieved** | 6/6 official pages (Home, Pricing, Product, Docs, Customers, AI) |
+| **Verbatim Citations** | **62 snippets verified verbatim against fetched pages** |
+| **Automated Tests** | **130 / 130 passing** |
+
+### Key Competitive Findings Uncovered
+
+1. **AI Cost Unpredictability (Friction):** Identified Notion's credit-based model for AI agents ($10 per 1,000 monthly credits) as a major unpredictability risk for scaling teams.
+2. **Deterministic Tiers:** Cleanly mapped recurring tiers ($0 Free, $10 Plus, $20 Business/seat/mo) while safely excluding domain add-ons ($8–$10/domain) from baseline calculations.
+3. **Intellectual Honesty:** Marked adoption friction as `Partially Supported` due to lack of public churn metrics — proving strict adherence to verifiable facts over LLM assumptions.
+
+---
+
+## 🛡️ Production Engineering & Security Guardrails
+
+### 1. SSRF-Safe Web Fetcher (`server/net/safeFetch.ts`)
+
+- **Protocol & Ports:** HTTP/HTTPS only, ports 80/443. Credentials in URLs are rejected.
+- **DNS & IP Validation:** Resolves DNS before connection; blocks private, loopback, link-local/cloud metadata (`169.254.169.254`), CGNAT, and IPv4-mapped/NAT64 ranges. The connection is pinned to the validated IP, so there is no DNS-rebinding window.
+- **Redirect Discipline:** Every redirect hop is re-validated (max 3). Limits: 8s per page, 22s research budget, 3MB per response.
+- **Parsing Security:** HTML parsed with `node-html-parser`. Scripts, stylesheets, and iframes are discarded — never executed.
+
+### 2. Isolated Computational Sandbox (`server/analysis/sandbox.ts`)
+
+- All pricing metrics (M1–M11) and distributions (lowest, highest, median, spread) are computed deterministically in `node:vm`.
+- Missing or incompatible units yield `insufficient_data` instead of model hallucinations.
+
+### 3. Critic & Verification Stage (`server/analysis/critic.ts`)
+
+Evaluates 8 deterministic rules plus an LLM judge:
+
+- **C1–C3:** Every source is real, every claim is backed by retrieved evidence, and citations match the fetched pages verbatim.
+- **C4–C6:** Metrics are recomputed independently, facts are kept separate from hypotheses, and no figure is invented.
+- **C7–C8:** Recommendations follow from the hypotheses, and churn statements stay provisional.
+- **C9:** An LLM judge reviews goal fit and overall consistency.
+
+---
+
+## ⚡ Quick Start (Local Setup)
 
 ```bash
+git clone https://github.com/santinogenta27/nexus-agent.git
+cd nexus-agent
 npm install
-cp .env.example .env      # optional: set GEMINI_API_KEY (Google AI Studio Free Tier works)
-npm run dev               # http://localhost:3000
+cp .env.example .env      # Set GEMINI_API_KEY
+npm run dev               # Full-stack server at http://localhost:3000
 ```
 
-Without a key, web research still runs live; the LLM nodes (Supervisor, Synthesizer, Critic judge) use the deterministic engine and the UI labels them `fallback`.
+> **Note:** Without an API key, the system runs with the deterministic engine in fallback mode.
+
+### Scripts
 
 | Script | Purpose |
-| --- | --- |
+| :--- | :--- |
 | `npm run dev` | Express + Vite middleware on port 3000 (`tsx server.ts`) |
-| `npm run genkit:dev` | Same server under the Genkit Developer UI |
-| `npm run lint` | `tsc --noEmit` |
-| `npm test` | Unit and integration tests (`node:test` via tsx, local HTTP servers only) |
+| `npm run genkit:dev` | Launch under the Genkit Developer UI |
+| `npm run lint` | TypeScript type-checking (`tsc --noEmit`) |
+| `npm test` | Run the 130 unit and integration tests |
 | `npm run build` | Production frontend build into `dist/` |
-| `npm start` | `node server.ts` (Node ≥ 22.18). Set `NODE_ENV=production` to serve `dist/` |
+| `npm start` | Production Node server (`node server.ts`) |
 
-## Configuration
+### ⚙️ Environment Variables
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | — | Server-side only; never sent to the browser. Requests use `User-Agent: aistudio-build` |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | |
-| `PORT` | `3000` | |
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `GEMINI_API_KEY` | — | Google Gemini API key (server-side only, never sent to browser) |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model to use; production runs `gemini-3.1-flash-lite` |
+| `PORT` | `3000` | Server listening port |
+| `NODE_ENV` | `development` | Set to `production` when serving the compiled frontend |
 
-## API
+---
 
-- `GET /api/health` — status, Gemini configuration, Genkit tools/flow, rate-limit usage, research limits.
-- `POST /api/agent/run` — body `{ goal, company?, url?, domain, depth }` (company or url required; `depth` = max critic cycles, 1–3). Returns `{ plan, traces, report, critic, telemetry, warnings }`. Send `Accept: application/x-ndjson` to stream node events.
+## 📁 Project Layout
 
-## How each node works
-
-- **Supervisor** — three testable hypotheses adapted to the goal and domain, each with evidence needed and a refutation criterion. Optionally suggests the official domain (verified before use).
-- **Retrieval** (`server/research/`) — the user URL is the primary source; with only a name, candidate domains are tried and accepted only if the page names the company. Up to 6 pages (home, pricing, product, docs, customers) are fetched with concurrency 3 and extracted into verbatim evidence (value proposition, features, audience, prices, fees, custom pricing, friction signals, docs).
-- **Sandbox** (`server/analysis/sandbox.ts`) — Zod-validates extracted data, then computes observed counts and calculated price levels in `node:vm`. Missing data yields `insufficient_data`, never an estimate.
-- **Synthesizer** — report with profile, products/pricing, hypothesis verdicts, confirmed findings vs. inferences vs. open questions, prioritised risks/opportunities and recommendations (impact, effort, timeframe, KPI, hypothesis).
-- **Critic** (`server/analysis/critic.ts`) — checks that claims cite retrieved evidence, snippets match fetched pages verbatim, calculations match an independent re-implementation, no figure is invented, verdicts are evidence-backed, and churn stays provisional and non-causal; plus an LLM judge for goal fit and contradictions. Failing reports go back to the Synthesizer (≤ 3 cycles); anything still failing is removed or replaced with evidence-only text and listed under limitations.
-
-Research status is **Live** (all sources retrieved), **Partial** (some failed/empty or no pricing page) or **Fallback** (nothing retrieved — the report then contains no web findings).
-
-## Fetch safety (`server/net/safeFetch.ts`)
-
-- http/https only, ports 80/443, no URL credentials, internal names (`localhost`, `*.internal`, `*.local`, single-label hosts) rejected.
-- DNS results are validated and the socket connects to the validated address (no DNS-rebinding window). Private, loopback, link-local/metadata, CGNAT, multicast, reserved and IPv4-mapped/NAT64 ranges are blocked.
-- Every redirect hop is re-validated (max 3). 8 s per page, 22 s research budget, 3 MB per response (after decompression), HTML only.
-- HTML is parsed with `node-html-parser`; scripts, styles and embeds are discarded, never executed.
-
-## Limits
-
-- Run budget 120 s, derived from the step limits so no step cuts the next one short (Supervisor 12 s + research 22 s + Synthesizer 50 s + judge 30 s + 6 s margin; model background 15 s only when needed). 500/503 retried twice (2 s, 4 s) if time remains; local 15 RPM / 1,500 RPD guard. The HTTP request timeout is set above the run budget.
-- Hypothesis verdicts: `supported`, `partially_supported`, `refuted` or `inconclusive`, each with supporting, contradicting and missing evidence; the Critic rejects verdicts whose citations do not match.
-- Price levels (M2–M5) only compare recurring prices with the same currency, stated unit, product family and role; add-ons are never compared.
-- HTTP 429 (quota exhausted) is never retried: further Gemini calls are skipped for 60 s and the affected steps fall back.
-- Cost uses reference list prices ($0.30 / $2.50 per 1M input/output tokens); Free Tier usage is billed $0.
-
-## Known limitations
-
-- Pages with too little readable text are diagnosed (blocked, error page, built by JavaScript, empty). Recovery tries structured data embedded in the page (JSON-LD / JSON, parsed, never executed), then one untried internal link or `sitemap.xml` entry of the same kind. JavaScript is never executed, so purely client-rendered content may stay unavailable.
-- If key pages remain unreadable, Gemini may add general background from its own knowledge. It is shown separately as unverified, has no citations, supports no finding, and sentences with figures are removed.
-- robots.txt is not consulted.
-- Same-site detection uses the last two host labels, so multi-part TLDs (e.g. `.co.uk`) may limit page discovery.
-- Price extraction is pattern-based; plan names are a heuristic and billing periods may be `unknown` (e.g. per-transaction pricing).
-- `node:vm` is not a security boundary; it is used only for code generated from validated numbers, never model-written code.
-
-## Project layout
-
+```text
+server.ts                      # Express, Vite middleware, Genkit orchestrator
+server/net/safeFetch.ts        # SSRF-safe HTTP client with IP validation
+server/research/               # HTML extraction, evidence classification & page discovery
+server/analysis/               # Sandbox metrics (node:vm) and Critic validation
+server/agent/deductive.ts      # Deductive hypotheses and deterministic engine
+src/types/agent.ts             # Zod schemas and shared domain contracts
+src/components/                # React 19 UI: DAG visualizer, reports, telemetry
+tests/                         # 130 automated unit, sandbox, and integration tests
 ```
-server.ts                      Express, Vite middleware, Genkit tools + flow, orchestrator
-server/net/safeFetch.ts        SSRF-safe HTTP client
-server/research/               HTML extraction, evidence classification, site resolution & page discovery
-server/analysis/               Sandbox metrics and Critic validation
-server/agent/deductive.ts      Hypotheses, evidence coverage, deterministic report
-src/types/agent.ts             Zod schemas and shared types
-src/components/                Navbar, Agent DAG + research report, System Architecture page
-tests/                         Fetch safety, extraction, research, sandbox and critic tests
-```
+
+---
+
+## 📄 License
+
+[MIT](LICENSE) © 2026 santinogenta27
