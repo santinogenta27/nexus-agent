@@ -148,6 +148,8 @@ export interface FetchOptions {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** 'html' (default) accepts HTML only; 'xml' accepts XML documents such as sitemap.xml. */
+  accept?: 'html' | 'xml';
 }
 
 export interface FetchedPage {
@@ -283,7 +285,8 @@ export async function fetchPage(rawUrl: string, options: FetchOptions = {}): Pro
     }
     if (result.status >= 400) throw new FetchError('http', `HTTP ${result.status}`, result.status);
     const contentType = String(result.headers['content-type'] ?? '');
-    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+    const allowed = options.accept === 'xml' ? /(?:application|text)\/xml|\+xml/i : /text\/html|application\/xhtml\+xml/i;
+    if (!allowed.test(contentType)) {
       throw new FetchError('content_type', `Unsupported content type: ${contentType || 'none'}`);
     }
     const body = result.body ?? Buffer.alloc(0);

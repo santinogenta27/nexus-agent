@@ -21,6 +21,7 @@ import type {
   HypothesisAssessment,
   IntelligenceReport,
   LlmFailureKind,
+  ModelContext,
   NodeId,
   NodeTrace,
   PlanStep,
@@ -36,8 +37,17 @@ import { executeSandbox, referenceMetrics } from './server/analysis/sandbox.ts';
 import type { SandboxInput } from './server/analysis/sandbox.ts';
 import { applyJudge, repairDraft, runDeterministicChecks, summarizeCritic } from './server/analysis/critic.ts';
 import type { CriticContext, ReportDraft } from './server/analysis/critic.ts';
-import { applyVerdicts, assessHypotheses, churnAssessment, defaultHypotheses, deterministicSynthesis, isChurnGoal } from './server/agent/deductive.ts';
-import { LlmUnavailableError, classifyLlmError, failureLabel } from './server/agent/llmErrors.ts';
+import {
+  applyVerdicts,
+  assessHypotheses,
+  churnAssessment,
+  defaultHypotheses,
+  deterministicSynthesis,
+  isChurnGoal,
+  modelContextReason,
+  sanitizeModelContext,
+} from './server/agent/deductive.ts';
+import { LlmUnavailableError, QuotaGuard, classifyLlmError, failureLabel, isQuotaError } from './server/agent/llmErrors.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -49,13 +59,18 @@ const LLM_MAX_RETRIES = 2;
 const LLM_BACKOFF_BASE_MS = 2_000;
 const RETRYABLE_STATUSES = new Set([500, 503]);
 
-/** End-to-end latency target for one run; every LLM call and the research step are sized to fit inside it. */
-const RUN_BUDGET_MS = 45_000;
+/**
+ * Upper bound for one run. Every LLM call is capped by its own timeout and by the time left in this budget, so the
+ * 30 s Synthesizer and judge limits are real only if the budget leaves room for them after research.
+ */
+const RUN_BUDGET_MS = 90_000;
 const SUPERVISOR_TIMEOUT_MS = 12_000;
-const SYNTHESIZER_TIMEOUT_MS = 18_000;
-const JUDGE_TIMEOUT_MS = 10_000;
+const SYNTHESIZER_TIMEOUT_MS = 30_000;
+const JUDGE_TIMEOUT_MS = 30_000;
+/** Background-knowledge request, only made when web retrieval could not provide enough content. */
+const MODEL_CONTEXT_TIMEOUT_MS = 15_000;
 /** Minimum time left before another synthesizer → critic revision cycle is attempted. */
-const REVISION_MIN_REMAINING_MS = 15_000;
+const REVISION_MIN_REMAINING_MS = 35_000;
 
 // Reference list prices (USD per 1M tokens) for a Flash-class model. Free Tier usage is billed $0;
 // the telemetry reports what the same run would cost on the paid tier.
@@ -75,6 +90,9 @@ const genai = GEMINI_API_KEY
   : undefined;
 
 const ai = genkit({ plugins: GEMINI_API_KEY ? [googleAI({ apiKey: GEMINI_API_KEY })] : [] });
+
+/** Process-wide: once Gemini reports an exhausted quota, calls are skipped for a cool-down instead of retried. */
+const quotaGuard = new QuotaGuard();
 
 // ---------------------------------------------------------------------------
 // Free Tier rate-limit guard (sliding window RPM + daily cap)
@@ -130,6 +148,8 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 /** Calls Gemini within `deadline` (epoch ms). Each attempt is capped at `timeoutMs`; retries only fit if time remains. */
 async function callGemini(prompt: string, options: { json?: boolean; timeoutMs: number; deadline: number }): Promise<LlmResult> {
   if (!genai) throw new LlmUnavailableError('not_configured', failureLabel('not_configured'));
+  // A recent 429 means the quota is exhausted: skip without sending a request.
+  quotaGuard.assertAvailable();
   const client = genai;
   const attempt = () => {
     const budget = Math.min(options.timeoutMs, options.deadline - Date.now());
@@ -156,6 +176,11 @@ async function callGemini(prompt: string, options: { json?: boolean; timeoutMs: 
       response = await attempt();
       break;
     } catch (error) {
+      if (isQuotaError(error)) {
+        // Never retried; later calls in this run (and the next minute) are skipped by the quota guard.
+        quotaGuard.markExhausted();
+        throw error;
+      }
       const backoff = LLM_BACKOFF_BASE_MS * 2 ** retry;
       const retryable = error instanceof ApiError && RETRYABLE_STATUSES.has(error.status);
       if (!retryable || retry >= LLM_MAX_RETRIES || options.deadline - Date.now() < backoff + 3_000) throw error;
@@ -434,6 +459,16 @@ function synthesizerPrompt(args: {
     .join('\n\n');
 }
 
+function modelContextPrompt(company: string, goal: string): string {
+  return [
+    `Give general background about the company "${company}" from your own training knowledge, relevant to: ${goal}`,
+    'Write 3 to 5 short sentences about what the company does, who it serves and how it is generally positioned.',
+    'Do NOT state prices, plan names with prices, numbers, percentages, dates, customer counts, revenue or quotes.',
+    'If you do not know this company, reply exactly: UNKNOWN',
+    'This will be shown as unverified model knowledge, not as researched evidence.',
+  ].join('\n');
+}
+
 function judgePrompt(input: AgentRunRequest, draft: ReportDraft): string {
   const s = draft.synthesis;
   return [
@@ -457,8 +492,9 @@ function assembleReport(args: {
   research: ResearchResult;
   sandbox: SandboxResult & { input: SandboxInput };
   limitations: string[];
+  modelContext: ModelContext;
 }): IntelligenceReport {
-  const { draft, research, sandbox, limitations } = args;
+  const { draft, research, sandbox, limitations, modelContext } = args;
   const s = draft.synthesis;
   const hypotheses = applyVerdicts(draft.hypotheses, s.hypothesisVerdicts);
   const evidenceSource = new Map(research.evidence.map((e) => [e.id, e.sourceId]));
@@ -481,6 +517,7 @@ function assembleReport(args: {
   return {
     ...s,
     company: research.target,
+    modelContext,
     researchStatus: research.status,
     hypotheses,
     // Exactly the validated, de-duplicated prices the sandbox computed on, so the table and M1 always agree.
@@ -553,6 +590,30 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
     })
   ).value;
   if (research.status !== 'live') ctx.warnings.push(research.statusReason);
+
+  // 2b. Last resort when retrieval could not read the company's pages: general background from the model's own
+  //     knowledge. It is shown separately, never used as evidence, and stripped of every figure.
+  let modelContextUsage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
+  const contextReason = modelContextReason(research);
+  let modelContext: ModelContext = { status: 'not_needed', reason: 'Web retrieval provided the key pages', statements: [] };
+  if (contextReason) {
+    if (!genai) {
+      modelContext = { status: 'unavailable', reason: `${contextReason}. ${failureLabel('not_configured')}; no model background was added.`, statements: [], failureKind: 'not_configured' };
+    } else {
+      try {
+        const result = await callGemini(modelContextPrompt(research.target.company || company, input.goal), { timeoutMs: MODEL_CONTEXT_TIMEOUT_MS, deadline: ctx.deadline - 45_000 });
+        modelContextUsage = result;
+        ctx.llmCalls += 1;
+        const statements = sanitizeModelContext(result.text);
+        modelContext = statements.length
+          ? { status: 'provided', reason: contextReason, statements }
+          : { status: 'unavailable', reason: `${contextReason}. The model's answer contained no qualitative statements without figures.`, statements: [] };
+      } catch (error) {
+        const failure = classifyLlmError(error);
+        modelContext = { status: 'unavailable', reason: `${contextReason}. ${failure.message}`, statements: [], failureKind: failure.kind };
+      }
+    }
+  }
 
   // 3. Sandbox — deterministic metrics over validated extracted data
   const sandbox = (
@@ -671,6 +732,14 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
   if (churn.status === 'provisional') limitations.push(churn.note);
   for (const m of sandbox.metrics.filter((x) => x.status === 'insufficient_data')) limitations.push(`${m.id} ${m.label}: insufficient data — ${m.note}.`);
   limitations.push(...sandbox.rejectedInputs);
+  for (const src of research.sources.filter((s) => s.recovery)) {
+    limitations.push(`${src.url}: content recovered via ${src.recovery?.method.replace('_', ' ')} — ${src.recovery?.detail}.`);
+  }
+  if (modelContext.status === 'provided') {
+    limitations.push('General background from Gemini\'s own knowledge is shown separately. It is not verified on the web, carries no citations and supports no finding.');
+  } else if (contextReason) {
+    limitations.push(`No model background was added: ${modelContext.reason}`);
+  }
   if (research.discardedPriceFragments > 0) {
     limitations.push(`${research.discardedPriceFragments} price amounts on pricing pages were discarded because no product, line item, unit or period could be linked to them.`);
   }
@@ -694,16 +763,16 @@ async function runAgent(input: AgentRunRequest, emit: Emit): Promise<AgentRunRes
     limitations.unshift(notice);
   }
 
-  const report = assembleReport({ draft, research, sandbox, limitations });
+  const report = assembleReport({ draft, research, sandbox, limitations, modelContext });
   const telemetry: Telemetry = {
     model: genai ? GEMINI_MODEL : 'deterministic-fallback',
     llmMode: modes.size > 1 ? 'hybrid' : modes.has('live') ? 'live' : 'fallback',
     researchStatus: research.status,
     totalLatencyMs: round(performance.now() - startedAt),
     p95LatencyMs: round(p95(ctx.traces.map((t) => t.latencyMs))),
-    inputTokens: ctx.traces.reduce((sum, t) => sum + t.inputTokens, 0),
-    outputTokens: ctx.traces.reduce((sum, t) => sum + t.outputTokens, 0),
-    costUsd: round(ctx.traces.reduce((sum, t) => sum + t.costUsd, 0), 6),
+    inputTokens: ctx.traces.reduce((sum, t) => sum + t.inputTokens, 0) + modelContextUsage.inputTokens,
+    outputTokens: ctx.traces.reduce((sum, t) => sum + t.outputTokens, 0) + modelContextUsage.outputTokens,
+    costUsd: round(ctx.traces.reduce((sum, t) => sum + t.costUsd, 0) + costOf(modelContextUsage), 6),
     cycles: cycle,
     maxCycles,
     llmCalls: ctx.llmCalls,

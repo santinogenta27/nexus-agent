@@ -5,8 +5,8 @@ import type { Evidence, PriceObservation, ResearchResult } from '../src/types/ag
 import { executeSandbox, referenceMetrics } from '../server/analysis/sandbox.ts';
 import { repairDraft, runDeterministicChecks, summarizeCritic } from '../server/analysis/critic.ts';
 import type { CriticContext, ReportDraft } from '../server/analysis/critic.ts';
-import { applyVerdicts, assessHypotheses, churnAssessment, defaultHypotheses, deterministicSynthesis } from '../server/agent/deductive.ts';
-import { LlmUnavailableError, classifyLlmError } from '../server/agent/llmErrors.ts';
+import { applyVerdicts, assessHypotheses, churnAssessment, defaultHypotheses, deterministicSynthesis, modelContextReason, sanitizeModelContext } from '../server/agent/deductive.ts';
+import { LlmUnavailableError, QUOTA_COOLDOWN_MS, QuotaGuard, classifyLlmError, isQuotaError } from '../server/agent/llmErrors.ts';
 
 const corpus =
   'Acme helps teams plan projects. Built for engineering teams. Team $12 per user/month Business $240 per year Contact sales for custom pricing Start your free trial today Start now Contact sales';
@@ -244,6 +244,43 @@ describe('critic', () => {
     const result = runDeterministicChecks(draft, ctx);
     assert.equal(result.checks.find((c) => c.id === 'C1')?.status, 'fail');
     assert.equal(summarizeCritic(result, 'fallback', 'unavailable').status, 'pass_with_limitations');
+  });
+});
+
+describe('model background (last resort)', () => {
+  it('is not requested when the key pages were retrieved', () => {
+    assert.equal(modelContextReason(liveResearch()), null);
+  });
+  it('is requested when nothing could be retrieved, naming the reason', () => {
+    assert.match(modelContextReason(emptyResearch()) ?? '', /no usable source/);
+  });
+  it('is requested when a key page stayed unreadable after recovery', () => {
+    const research = liveResearch();
+    research.sources[1] = { ...research.sources[1], status: 'empty', error: 'The page appears to build its content with JavaScript' };
+    assert.match(modelContextReason(research) ?? '', /acme\.test\/pricing/);
+  });
+  it('drops every sentence with figures, prices, percentages or URLs', () => {
+    const statements = sanitizeModelContext(
+      'Acme makes project planning software for engineering teams. It costs $12 per user. It has 40% market share. Founded in 2015. See https://acme.test for details. It is generally positioned as a lightweight alternative to larger suites.',
+    );
+    assert.deepEqual(statements, ['Acme makes project planning software for engineering teams.', 'It is generally positioned as a lightweight alternative to larger suites.']);
+  });
+});
+
+describe('quota guard (HTTP 429)', () => {
+  it('skips calls during the cool-down after a 429 and allows them afterwards', () => {
+    const guard = new QuotaGuard();
+    guard.assertAvailable(1_000);
+    guard.markExhausted(1_000);
+    assert.throws(
+      () => guard.assertAvailable(1_000 + QUOTA_COOLDOWN_MS - 1),
+      (e: unknown) => e instanceof LlmUnavailableError && e.kind === 'quota' && /no new request was sent/.test(e.message),
+    );
+    assert.doesNotThrow(() => guard.assertAvailable(1_000 + QUOTA_COOLDOWN_MS));
+  });
+  it('identifies 429s as quota errors so they are never retried', () => {
+    assert.equal(isQuotaError(new ApiError({ status: 429, message: 'RESOURCE_EXHAUSTED' })), true);
+    assert.equal(isQuotaError(new ApiError({ status: 503, message: 'high demand' })), false);
   });
 });
 

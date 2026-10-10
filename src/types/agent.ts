@@ -43,6 +43,10 @@ export interface SourceRecord {
   textChars: number;
   durationMs: number;
   error?: string;
+  /** Why a fetched page had too little usable text (blocked, error page, built by JavaScript, empty). */
+  lowContentReason?: 'blocked' | 'error_page' | 'client_rendered' | 'empty';
+  /** How usable content was recovered when the page itself had too little text. */
+  recovery?: { method: 'embedded_data' | 'internal_link' | 'sitemap'; detail: string };
 }
 
 export const EVIDENCE_KINDS = ['value_prop', 'feature', 'audience', 'pricing', 'custom_pricing', 'friction', 'docs'] as const;
@@ -259,8 +263,21 @@ export interface ChurnAssessment {
   note: string;
 }
 
+/**
+ * General background from Gemini's own training knowledge, requested only when web retrieval could not provide
+ * enough content. It is never evidence: it has no citations, is not used by the Synthesizer or Critic, and sentences
+ * containing figures are dropped.
+ */
+export interface ModelContext {
+  status: 'provided' | 'unavailable' | 'not_needed';
+  reason: string;
+  statements: string[];
+  failureKind?: LlmFailureKind;
+}
+
 export interface IntelligenceReport extends Synthesis {
   company: ResearchTarget;
+  modelContext: ModelContext;
   researchStatus: ResearchStatus;
   hypotheses: HypothesisAssessment[];
   pricing: PriceObservation[];

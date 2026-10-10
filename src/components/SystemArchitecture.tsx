@@ -58,8 +58,8 @@ const PILLARS: { icon: LucideIcon; title: string; items: string[] }[] = [
     title: 'Observability',
     items: [
       'Per-node status, latency, tokens, cost and live/fallback mode, streamed as NDJSON.',
-      'Run-level latency against a 45 s target, P95 node latency, sources retrieved vs. failed, critic cycles.',
-      'Gemini 500/503 errors retried twice (2 s, 4 s) within the run budget; 15 RPM Free Tier guard.',
+      'Run-level latency within a 90 s budget, P95 node latency, sources retrieved vs. failed, critic cycles.',
+      'Gemini 500/503 errors retried twice (2 s, 4 s) within the run budget; HTTP 429 is never retried and pauses Gemini calls for 60 s; 15 RPM Free Tier guard.',
     ],
   },
   {
@@ -91,7 +91,7 @@ export default function SystemArchitecture() {
         <pre className="scrollbar-thin mt-3 overflow-x-auto font-mono text-[12.5px] leading-relaxed text-slate-300">{`Supervisor ──► Retrieval ──► Sandbox ──► Synthesizer ──► Critic
                                               ▲              │
                                               └── revise ≤ 3 ─┘`}</pre>
-        <p className="mt-3 text-sm text-slate-400">The only cycle is the Critic's revision edge back to the Synthesizer, capped by the run's depth and the 45-second budget.</p>
+        <p className="mt-3 text-sm text-slate-400">The only cycle is the Critic's revision edge back to the Synthesizer, capped by the run's depth and the 90-second budget.</p>
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

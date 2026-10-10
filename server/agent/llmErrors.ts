@@ -41,6 +41,38 @@ export function classifyLlmError(error: unknown): { kind: LlmFailureKind; messag
   return { kind: 'error', message: `${LABEL.error}: ${firstLine(message)}` };
 }
 
+/**
+ * After Gemini answers HTTP 429, further calls are skipped for a cool-down period instead of being sent: retrying an
+ * exhausted quota only burns requests and time. 429s are never retried inside a call either (only 500/503 are).
+ */
+export const QUOTA_COOLDOWN_MS = 60_000;
+
+export class QuotaGuard {
+  private exhaustedAt: number | null = null;
+
+  markExhausted(now = Date.now()): void {
+    this.exhaustedAt = now;
+  }
+
+  /** Remaining cool-down in ms, or 0 when calls may be attempted. */
+  cooldownRemaining(now = Date.now()): number {
+    if (this.exhaustedAt === null) return 0;
+    return Math.max(0, this.exhaustedAt + QUOTA_COOLDOWN_MS - now);
+  }
+
+  /** Throws a classified 'quota' error while the cool-down is active. */
+  assertAvailable(now = Date.now()): void {
+    const left = this.cooldownRemaining(now);
+    if (left > 0) {
+      throw new LlmUnavailableError('quota', `${LABEL.quota}: skipped — the quota was already exhausted ${Math.round((QUOTA_COOLDOWN_MS - left) / 1000)} s ago; no new request was sent`);
+    }
+  }
+}
+
+export function isQuotaError(error: unknown): boolean {
+  return classifyLlmError(error).kind === 'quota';
+}
+
 function firstLine(text: string): string {
   // API errors embed a JSON body; keep the readable message only.
   const json = /"message"\s*:\s*"([^"]{1,200})/.exec(text);

@@ -1,7 +1,7 @@
 import type { Evidence, PageKind, PercentFee, PriceObservation, ResearchResult, ResearchStatus, ResearchTarget, SourceRecord } from '../../src/types/agent.ts';
 import { DEFAULT_POLICY, FetchError, fetchPage, validateUrl } from '../net/safeFetch.ts';
 import type { NetworkPolicy } from '../net/safeFetch.ts';
-import { classifyEvidence, extractPage } from './extract.ts';
+import { classifyEvidence, diagnoseLowContent, embeddedTextPage, extractEmbeddedText, extractPage } from './extract.ts';
 import type { ExtractedPage } from './extract.ts';
 
 export interface ResearchOptions {
@@ -17,8 +17,11 @@ export interface ResearchOptions {
 
 export const RESEARCH_DEFAULTS = { maxPages: 6, budgetMs: 22_000, perRequestTimeoutMs: 8_000, maxBytes: 3_000_000, concurrency: 3 } as const;
 
-/** Pages with less visible text than this are treated as empty (e.g. client-rendered shells). */
+/** Pages with less readable text than this are diagnosed (blocked, error page, built by JavaScript, empty) and recovered if possible. */
 const MIN_TEXT_CHARS = 200;
+
+/** Structured data (JSON-LD, embedded JSON) is explicit and dense, so less of it is enough to be useful. */
+const MIN_EMBEDDED_CHARS = 80;
 
 export interface ResearchOutput extends ResearchResult {
   /** sourceId → normalised page text, kept server-side for citation verification. */
@@ -46,20 +49,37 @@ async function fetchSource(id: string, url: string, kind: PageKind, timeoutMs: n
   try {
     const fetched = await fetchPage(url, { policy: opts.policy, timeoutMs, maxBytes: opts.maxBytes });
     const page = extractPage(fetched.body, fetched.finalUrl);
-    const empty = page.textChars < MIN_TEXT_CHARS;
+    const common = { ...base, finalUrl: fetched.finalUrl, httpStatus: fetched.status, title: page.title || undefined, bytes: fetched.bytes };
+    if (page.textChars >= MIN_TEXT_CHARS) {
+      return { record: { ...common, status: 'ok', textChars: page.textChars, durationMs: Date.now() - started }, page };
+    }
+    // Too little readable text. Diagnose why instead of assuming a JavaScript app, then try embedded structured data.
+    const diagnosis = diagnoseLowContent(fetched.body, page);
+    const embedded = diagnosis.reason === 'blocked' || diagnosis.reason === 'error_page' ? [] : extractEmbeddedText(fetched.body);
+    const embeddedPage = embedded.length ? embeddedTextPage(embedded, fetched.finalUrl) : null;
+    if (embeddedPage && embeddedPage.textChars >= MIN_EMBEDDED_CHARS) {
+      return {
+        record: {
+          ...common,
+          status: 'ok',
+          textChars: embeddedPage.textChars,
+          durationMs: Date.now() - started,
+          lowContentReason: diagnosis.reason,
+          recovery: { method: 'embedded_data', detail: `${embedded.length} text fields read from structured data embedded in the page (visible text: ${page.textChars} characters)` },
+        },
+        page: embeddedPage,
+      };
+    }
     return {
       record: {
-        ...base,
-        finalUrl: fetched.finalUrl,
-        status: empty ? 'empty' : 'ok',
-        httpStatus: fetched.status,
-        title: page.title || undefined,
-        bytes: fetched.bytes,
+        ...common,
+        status: 'empty',
         textChars: page.textChars,
         durationMs: Date.now() - started,
-        ...(empty ? { error: `Page returned only ${page.textChars} characters of visible text` } : {}),
+        lowContentReason: diagnosis.reason,
+        error: `${diagnosis.message} (${page.textChars} characters of visible text)`,
       },
-      page: empty ? null : page,
+      page: null,
     };
   } catch (error) {
     const failure = errorText(error);
@@ -94,26 +114,34 @@ const CATEGORY_RULES: { kind: PageKind; path: RegExp; text: RegExp; limit: numbe
 
 const EXCLUDED_PATH = /\/(?:login|log-in|signin|sign-in|signup|sign-up|register|legal|privacy|terms|cookies?|careers|jobs|blog|press|status)(?:\/|$)/i;
 
+/** All same-site links on the page that match a category rule, shortest first, without the per-category limit. */
+export function linksOfKind(home: ExtractedPage, homeUrl: string, kind: PageKind): string[] {
+  const rule = CATEGORY_RULES.find((r) => r.kind === kind);
+  if (!rule) return [];
+  const site = registrableDomain(new URL(homeUrl).hostname);
+  const matches = home.links
+    .map((link) => ({ link, url: new URL(link.href) }))
+    .filter(({ url }) => (url.protocol === 'https:' || url.protocol === 'http:') && (url.hostname === site || url.hostname.endsWith(`.${site}`)))
+    .filter(({ url }) => !EXCLUDED_PATH.test(url.pathname))
+    .filter(({ link, url }) => rule.path.test(url.pathname) || rule.text.test(link.text) || (rule.kind === 'docs' && url.hostname.startsWith('docs.')))
+    .map(({ url }) => {
+      url.search = '';
+      return url.toString();
+    })
+    .sort((a, b) => a.length - b.length);
+  return [...new Set(matches)];
+}
+
 /** Picks a few relevant same-site pages from the homepage's links. */
 export function discoverPages(home: ExtractedPage, homeUrl: string, maxExtra: number): { url: string; kind: PageKind }[] {
   const base = new URL(homeUrl);
-  const site = registrableDomain(base.hostname);
   const picked: { url: string; kind: PageKind }[] = [];
   const taken = new Set<string>([base.origin + base.pathname]);
 
   for (const rule of CATEGORY_RULES) {
-    const matches = home.links
-      .map((link) => ({ link, url: new URL(link.href) }))
-      .filter(({ url }) => (url.protocol === 'https:' || url.protocol === 'http:') && (url.hostname === site || url.hostname.endsWith(`.${site}`)))
-      .filter(({ url }) => !EXCLUDED_PATH.test(url.pathname))
-      .filter(({ link, url }) => rule.path.test(url.pathname) || rule.text.test(link.text) || (rule.kind === 'docs' && url.hostname.startsWith('docs.')))
-      .map(({ url }) => {
-        url.search = '';
-        return url.toString();
-      })
+    const unique = linksOfKind(home, homeUrl, rule.kind)
       .filter((u) => !taken.has(u))
-      .sort((a, b) => a.length - b.length);
-    const unique = [...new Set(matches)].slice(0, rule.limit);
+      .slice(0, rule.limit);
     for (const url of unique) {
       taken.add(url);
       picked.push({ url, kind: rule.kind });
@@ -124,6 +152,38 @@ export function discoverPages(home: ExtractedPage, homeUrl: string, maxExtra: nu
   // Keep category diversity: one page of each kind first, then the remainder.
   const ordered = [...picked.filter((p, i) => picked.findIndex((q) => q.kind === p.kind) === i), ...picked.filter((p, i) => picked.findIndex((q) => q.kind === p.kind) !== i)];
   return ordered.slice(0, maxExtra);
+}
+
+const RECOVERABLE_KINDS: PageKind[] = ['pricing', 'product', 'docs'];
+
+/** Reads <loc> URLs from /sitemap.xml (one file, no recursion into sitemap indexes). Returns [] on any failure. */
+export async function loadSitemap(siteUrl: string, timeoutMs: number, opts: Required<Pick<ResearchOptions, 'policy' | 'maxBytes'>>): Promise<string[]> {
+  if (timeoutMs < 500) return [];
+  try {
+    const fetched = await fetchPage(new URL('/sitemap.xml', siteUrl).toString(), { policy: opts.policy, timeoutMs, maxBytes: Math.min(opts.maxBytes, 2_000_000), accept: 'xml' });
+    return [...fetched.body.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]).slice(0, 5_000);
+  } catch {
+    return [];
+  }
+}
+
+/** Shortest same-site sitemap URL whose path matches the page kind and has not been tried yet. */
+export function sitemapCandidate(locs: string[], kind: PageKind, siteUrl: string, tried: Set<string>): string | undefined {
+  const rule = CATEGORY_RULES.find((r) => r.kind === kind);
+  if (!rule) return undefined;
+  const site = registrableDomain(new URL(siteUrl).hostname);
+  return locs
+    .map((loc) => {
+      try {
+        return new URL(loc);
+      } catch {
+        return null;
+      }
+    })
+    .filter((u): u is URL => u !== null && (u.protocol === 'https:' || u.protocol === 'http:') && (u.hostname === site || u.hostname.endsWith(`.${site}`)))
+    .filter((u) => rule.path.test(u.pathname) && !EXCLUDED_PATH.test(u.pathname) && !tried.has(u.toString()))
+    .map((u) => u.toString())
+    .sort((a, b) => a.length - b.length)[0];
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -230,7 +290,32 @@ export async function researchCompany(input: { company?: string; url?: string },
     const extra = discoverPages(home.page, target.url, maxPages - 1);
     const fetched = await mapLimit(extra, concurrency, (p) => fetchSource(nextSourceId(), p.url, p.kind, timeLeft(), fetchOpts));
     sources.push(...fetched.map((f) => f.record));
-    const pages: FetchedSource[] = [home, ...fetched];
+
+    // 3. Recovery: for an empty or failed key page, try one alternative of the same kind — an untried internal link,
+    //    then the sitemap. The failed URL stays in `sources` with its reason; nothing is copied across pages.
+    const recovered: FetchedSource[] = [];
+    const tried = new Set<string>([target.url, ...extra.map((p) => p.url), ...fetched.map((f) => f.record.finalUrl ?? f.record.url)]);
+    const needsRecovery = fetched.filter((f) => (f.record.status === 'empty' || f.record.status === 'failed') && RECOVERABLE_KINDS.includes(f.record.kind));
+    let sitemap: string[] | null = null;
+    for (const lost of needsRecovery.slice(0, 2)) {
+      if (deadline - Date.now() < 2_000) break;
+      let method: 'internal_link' | 'sitemap' = 'internal_link';
+      let candidate = linksOfKind(home.page, target.url, lost.record.kind).find((u) => !tried.has(u));
+      if (!candidate) {
+        sitemap ??= await loadSitemap(target.url, Math.min(5_000, timeLeft()), fetchOpts);
+        candidate = sitemapCandidate(sitemap, lost.record.kind, target.url, tried);
+        method = 'sitemap';
+      }
+      if (!candidate) continue;
+      tried.add(candidate);
+      const alt = await fetchSource(nextSourceId(), candidate, lost.record.kind, timeLeft(), fetchOpts);
+      if (alt.record.status === 'ok') {
+        alt.record.recovery ??= { method, detail: `Alternative ${lost.record.kind} page found via ${method === 'sitemap' ? 'sitemap.xml' : 'an internal link'} after ${lost.record.url} failed (${lost.record.error ?? lost.record.status})` };
+      }
+      recovered.push(alt);
+    }
+    sources.push(...recovered.map((r) => r.record));
+    const pages: FetchedSource[] = [home, ...fetched, ...recovered];
 
     const evidence: Evidence[] = [];
     const prices: PriceObservation[] = [];

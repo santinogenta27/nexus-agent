@@ -110,6 +110,72 @@ describe('researchCompany', () => {
     assert.equal(result.sources[0].status, 'blocked');
   });
 
+  it('recovers a low-text page from embedded structured data, keeping the reason', async () => {
+    const jsonLd = JSON.stringify({ '@type': 'Product', name: 'Initech workspace for operations teams', description: 'Initech helps operations teams plan shifts without spreadsheets.', offers: [{ name: 'Starter plan for small teams', description: '$9 per user/month' }] });
+    const server = await startServer({
+      '/': sendHtml(html(`<div id="root"></div><script type="application/ld+json">${jsonLd}</script><script src="/app.js"></script>`, '<title>Initech</title>')),
+    });
+    const result = await researchCompany({ url: `${server.origin}/` }, { policy: LOOPBACK_TEST_POLICY });
+    await server.close();
+    const home = result.sources[0];
+    assert.equal(home.status, 'ok');
+    assert.equal(home.recovery?.method, 'embedded_data');
+    assert.equal(home.lowContentReason, 'client_rendered');
+    assert.ok(result.evidence.length > 0);
+    for (const e of result.evidence) assert.ok(result.corpora[e.sourceId].includes(e.snippet), `${e.id} must be verbatim`);
+  });
+
+  it('replaces an empty pricing page with an untried internal link of the same kind', async () => {
+    const server = await startServer({
+      '/': sendHtml(html(`<a href="/pricing">Pricing</a><a href="/plans">Plans</a><a href="/pricing/compare">Compare plans</a><h1>Umbrella keeps teams in sync</h1>${FILLER}`, '<title>Umbrella</title>')),
+      '/pricing': sendHtml(html('<div id="root"></div>')),
+      '/plans': sendHtml(html('<p>Loading</p>')),
+      '/pricing/compare': sendHtml(html(`<h1>Compare plans</h1>${FILLER}<h2>Team</h2><p>$15 per user/month</p>`)),
+    });
+    const result = await researchCompany({ url: `${server.origin}/` }, { policy: LOOPBACK_TEST_POLICY });
+    await server.close();
+    const failed = result.sources.filter((s) => s.kind === 'pricing' && s.status === 'empty');
+    assert.ok(failed.length >= 1 && failed.every((s) => s.error && s.lowContentReason), 'failed URLs stay listed with their reason');
+    const recovered = result.sources.find((s) => s.recovery?.method === 'internal_link');
+    assert.ok(recovered?.url.endsWith('/pricing/compare'));
+    assert.deepEqual(result.prices.map((p) => [p.product, p.amount, p.unit, p.period]), [['Team', 15, 'user', 'month']]);
+    assert.equal(result.status, 'partial', 'still partial: some sources were empty');
+  });
+
+  it('falls back to sitemap.xml when no internal link is left', async () => {
+    let origin = '';
+    const server = await startServer({
+      '/': sendHtml(html(`<a href="/pricing">Pricing</a><h1>Hooli builds compression</h1>${FILLER}`, '<title>Hooli</title>')),
+      '/pricing': sendHtml(html('<p>Loading…</p>')),
+      '/sitemap.xml': (_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/xml' });
+        res.end(`<?xml version="1.0"?><urlset><url><loc>${origin}/blog/pricing-news</loc></url><url><loc>${origin}/plans</loc></url><url><loc>https://other.test/pricing</loc></url></urlset>`);
+      },
+      '/plans': sendHtml(html(`<h1>Plans</h1>${FILLER}<h2>Pro</h2><p>$30 per month</p>`)),
+    });
+    origin = server.origin;
+    const result = await researchCompany({ url: `${server.origin}/` }, { policy: LOOPBACK_TEST_POLICY });
+    await server.close();
+    const recovered = result.sources.find((s) => s.recovery?.method === 'sitemap');
+    assert.ok(recovered?.url.endsWith('/plans'), 'blog and off-site sitemap entries are skipped');
+    assert.ok(result.sources.some((s) => s.url.endsWith('/pricing') && s.status === 'empty'));
+    assert.deepEqual(result.prices.map((p) => [p.product, p.amount, p.period]), [['Pro', 30, 'month']]);
+  });
+
+  it('reports an unrecoverable low-text page honestly, with no invented content', async () => {
+    const server = await startServer({
+      '/': sendHtml(html(`<a href="/pricing">Pricing</a><h1>Vandelay imports goods</h1>${FILLER}`, '<title>Vandelay</title>')),
+      '/pricing': sendHtml(html('<p>Access denied</p>', '<title>Attention Required</title>')),
+    });
+    const result = await researchCompany({ url: `${server.origin}/` }, { policy: LOOPBACK_TEST_POLICY });
+    await server.close();
+    const pricing = result.sources.find((s) => s.kind === 'pricing');
+    assert.equal(pricing?.status, 'empty');
+    assert.equal(pricing?.lowContentReason, 'blocked');
+    assert.equal(result.prices.length, 0);
+    assert.equal(result.status, 'partial');
+  });
+
   it('respects the time budget', async () => {
     const slow = await startServer({
       '/': (_req, res) => {

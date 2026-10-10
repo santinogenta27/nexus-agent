@@ -2,7 +2,19 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { motion } from 'motion/react';
 import { AlertTriangle, BookOpenCheck, CheckCircle2, CircleSlash, Cpu, ExternalLink, FileSearch, Lightbulb, ShieldAlert, ShieldCheck, XCircle } from 'lucide-react';
-import type { AgentRunResponse, CheckStatus, CriticReport, Evidence, EvidenceCoverage, GeminiStatus, HypothesisVerdict, LlmFailureKind, ResearchStatus } from '../types/agent';
+import type {
+  AgentRunResponse,
+  CheckStatus,
+  CriticReport,
+  Evidence,
+  EvidenceCoverage,
+  GeminiStatus,
+  HypothesisVerdict,
+  LlmFailureKind,
+  ModelContext,
+  ResearchStatus,
+  SourceRecord,
+} from '../types/agent';
 import CopyButton from './CopyButton';
 
 export const RESEARCH_LABEL: Record<ResearchStatus, { label: string; className: string; hint: string }> = {
@@ -166,6 +178,40 @@ function EvidenceRefs({ ids, evidence }: { ids: string[]; evidence: Map<string, 
   );
 }
 
+const LOW_CONTENT_LABEL: Record<NonNullable<SourceRecord['lowContentReason']>, string> = {
+  blocked: 'blocked or bot check',
+  error_page: 'error page',
+  client_rendered: 'content built by JavaScript',
+  empty: 'almost no readable text',
+};
+
+/** Background from Gemini's training knowledge: visually separate from evidence and explicitly unverified. */
+function ModelContextPanel({ context }: { context: ModelContext }) {
+  return (
+    <section aria-label="General model knowledge" className="min-w-0 space-y-2 rounded-lg border border-dashed border-amber-500/40 bg-amber-500/5 p-4">
+      <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
+        <Cpu className="h-4 w-4" aria-hidden="true" />
+        General model knowledge — not verified on the web
+      </h3>
+      <p className="text-xs text-amber-200/80">{context.reason}</p>
+      {context.status === 'provided' ? (
+        <>
+          <ul className="list-inside list-disc space-y-1 text-sm text-slate-300">
+            {context.statements.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-slate-500">
+            From Gemini's training data, not from retrieved pages. No citations, not used as evidence for any finding, verdict or metric; sentences with figures were removed.
+          </p>
+        </>
+      ) : (
+        <p className="text-xs text-slate-400">No model background was added.</p>
+      )}
+    </section>
+  );
+}
+
 const UNKNOWN_PRODUCT = 'Unknown product (no enclosing heading)';
 
 interface TariffRow {
@@ -320,6 +366,8 @@ export default function ResearchReport({ result }: { result: AgentRunResponse })
       <Section title="Company profile & value proposition" icon={FileSearch}>
         <p className="text-sm leading-relaxed text-slate-300">{report.companyProfile}</p>
       </Section>
+
+      {report.modelContext.status !== 'not_needed' && <ModelContextPanel context={report.modelContext} />}
 
       <Section title="Deductive hypotheses" icon={Lightbulb}>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -553,7 +601,14 @@ export default function ResearchReport({ result }: { result: AgentRunResponse })
               {s.title && <p className="mt-1 text-xs text-slate-400">{s.title}</p>}
               {s.status !== 'ok' && (
                 <p className="mt-1 text-xs text-rose-300">
-                  {s.status}: {s.error}
+                  {s.status}
+                  {s.lowContentReason ? ` (${LOW_CONTENT_LABEL[s.lowContentReason]})` : ''}: {s.error}
+                </p>
+              )}
+              {s.recovery && (
+                <p className="mt-1 text-xs text-amber-300">
+                  Recovered via {s.recovery.method.replace('_', ' ')}
+                  {s.lowContentReason ? ` · page itself: ${LOW_CONTENT_LABEL[s.lowContentReason]}` : ''} — {s.recovery.detail}
                 </p>
               )}
               {s.supports.length > 0 && <p className="mt-1 text-xs text-slate-500">Supports: {s.supports.join(' · ')}</p>}

@@ -168,6 +168,34 @@ export function applyVerdicts(hypotheses: HypothesisAssessment[], verdicts: Synt
   });
 }
 
+const KEY_KINDS = ['home', 'pricing', 'product'];
+
+/**
+ * General model knowledge is requested only as a last resort: when no source could be used at all, or when a key page
+ * (home, pricing, product) stayed unusable after recovery attempts.
+ */
+export function modelContextReason(research: ResearchResult): string | null {
+  if (research.status === 'fallback') return `Web retrieval produced no usable source (${research.statusReason})`;
+  const okKinds = new Set(research.sources.filter((s) => s.status === 'ok').map((s) => s.kind));
+  const lost = research.sources.filter((s) => s.status !== 'ok' && KEY_KINDS.includes(s.kind) && !okKinds.has(s.kind));
+  if (lost.length === 0) return null;
+  return `Key pages could not be read: ${lost.map((s) => `${s.url} (${s.error ?? s.status})`).join('; ')}`;
+}
+
+/**
+ * Keeps only qualitative background sentences. Anything with figures, prices, percentages, dates or URLs is dropped so
+ * model knowledge can never introduce numbers that look like observed facts.
+ */
+export function sanitizeModelContext(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.replace(/^[-*•\d.)\s]+/, '').trim())
+    .filter((s) => s.length >= 20 && s.length <= 300)
+    .filter((s) => !/\d|[$€£%]|https?:\/\/|www\./i.test(s))
+    .slice(0, 6);
+}
+
 const SIGNAL_LABEL: Record<FrictionSignal, string> = {
   contact_sales: 'Contact sales',
   demo_required: 'Demo request',

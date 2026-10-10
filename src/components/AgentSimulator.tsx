@@ -317,7 +317,7 @@ export default function AgentSimulator() {
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat icon={Timer} label="Total latency" value={telemetry ? formatMs(telemetry.totalLatencyMs) : running ? '…' : '—'} hint="Target: under 45 s" />
+            <Stat icon={Timer} label="Total latency" value={telemetry ? formatMs(telemetry.totalLatencyMs) : running ? '…' : '—'} hint="Run budget: 90 s; actual time depends on sources and model limits" />
             <Stat icon={Gauge} label="P95 node latency" value={telemetry ? formatMs(telemetry.p95LatencyMs) : '—'} />
             <Stat
               icon={Zap}

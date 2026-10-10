@@ -113,11 +113,22 @@ function productPath(card: HTMLElement, priceEl: HTMLElement, body: HTMLElement,
 }
 
 /**
+ * Raw-text and inert blocks are cut out before parsing, as a browser's tokenizer would end them at their closing tag.
+ * This matters: node-html-parser stops building the tree at some of them — e.g. Declarative Shadow DOM
+ * (<template shadowrootmode="open"><style>…</style></template>) — silently dropping the rest of the page.
+ */
+const RAW_BLOCKS = /<(script|style|template|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+
+export function stripRawBlocks(html: string): string {
+  return html.replace(RAW_BLOCKS, ' ');
+}
+
+/**
  * Parses HTML into plain text structures. Scripts, styles and embedded content are discarded and never executed;
  * node-html-parser only tokenises markup.
  */
 export function extractPage(html: string, baseUrl: string): ExtractedPage {
-  const root = parse(html, { comment: false, blockTextElements: { script: false, style: false, noscript: false, pre: true } });
+  const root = parse(stripRawBlocks(html), { comment: false, blockTextElements: { script: false, style: false, noscript: false, pre: true } });
 
   const meta = (selector: string) => collapse(root.querySelector(selector)?.getAttribute('content') ?? '');
   const title = collapse(root.querySelector('title')?.text ?? '');
@@ -202,6 +213,69 @@ export function extractPage(html: string, baseUrl: string): ExtractedPage {
   }
 
   return { title, description, siteName, h1, headings, lines, listItems, links, priceCards, corpus, textChars: bodyText.length };
+}
+
+// ---------------------------------------------------------------------------
+// Low-content diagnosis and embedded structured data
+// ---------------------------------------------------------------------------
+
+export type LowContentReason = 'blocked' | 'error_page' | 'client_rendered' | 'empty';
+
+const BLOCKED_RE = /captcha|are you a robot|access denied|attention required|just a moment|enable javascript and cookies|request blocked|unusual traffic|bot protection/i;
+const ERROR_RE = /\b(?:404|403|410|500|not found|page not found|error)\b/i;
+const APP_SHELL_RE = /<div[^>]+id=["'](?:root|app|__next|__nuxt|svelte|main-app)["'][^>]*>\s*<\/div>/i;
+
+/** Explains why a page yielded too little text, without assuming it is a single-page app. */
+export function diagnoseLowContent(html: string, page: ExtractedPage): { reason: LowContentReason; message: string } {
+  const visible = `${page.title} ${page.lines.join(' ')}`;
+  if (BLOCKED_RE.test(visible)) return { reason: 'blocked', message: 'The site served a bot check or access-denied page instead of content' };
+  if (ERROR_RE.test(page.title) || (page.h1[0] && ERROR_RE.test(page.h1[0]))) return { reason: 'error_page', message: `The site returned an error page ("${page.title || page.h1[0]}")` };
+  const scripts = (html.match(/<script\b/gi) ?? []).length;
+  if (APP_SHELL_RE.test(html) || (scripts >= 3 && page.textChars < 120)) {
+    return { reason: 'client_rendered', message: 'The page appears to build its content with JavaScript, which NexusAgent never executes' };
+  }
+  return { reason: 'empty', message: 'The response contained almost no readable text' };
+}
+
+const JSON_SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+const HUMAN_TEXT_RE = /[A-Za-z]{2,}[^A-Za-z]+[A-Za-z]{2,}|[$€£]\s?\d/;
+const NOT_PROSE_RE = /^(?:https?:|\/|#|data:|[\w-]+\.(?:js|css|png|jpg|svg|webp)$)|[{};<>]|^[A-Za-z0-9+/=_-]{24,}$/;
+
+/**
+ * Collects human-readable strings from structured data embedded in the page (JSON-LD, Next/Nuxt payloads,
+ * application/json blocks). The JSON is only parsed with JSON.parse — nothing is ever evaluated.
+ */
+export function extractEmbeddedText(html: string, limit = 400): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (value: unknown, depth: number) => {
+    if (out.length >= limit || depth > 40) return;
+    if (typeof value === 'string') {
+      const t = collapse(value);
+      if (t.length >= 3 && t.length <= 300 && HUMAN_TEXT_RE.test(t) && !NOT_PROSE_RE.test(t) && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    } else if (Array.isArray(value)) value.forEach((v) => walk(v, depth + 1));
+    else if (value && typeof value === 'object') Object.values(value).forEach((v) => walk(v, depth + 1));
+  };
+  for (const m of html.matchAll(JSON_SCRIPT_RE)) {
+    const attrs = m[1];
+    if (!/type=["']application\/(?:ld\+)?json["']|id=["']__(?:NEXT|NUXT)_DATA__["']/i.test(attrs)) continue;
+    if (m[2].length > 2_000_000) continue;
+    try {
+      walk(JSON.parse(m[2]), 0);
+    } catch {
+      // Malformed embedded JSON is simply ignored.
+    }
+  }
+  return out;
+}
+
+/** Wraps embedded strings as a minimal HTML page so they go through the same extraction and verification path. */
+export function embeddedTextPage(strings: string[], baseUrl: string): ExtractedPage {
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return extractPage(`<body>${strings.map((s) => `<p>${escape(s)}</p>`).join('')}</body>`, baseUrl);
 }
 
 // ---------------------------------------------------------------------------

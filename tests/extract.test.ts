@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyEvidence, extractPage, parsePriceCard } from '../server/research/extract.ts';
+import { classifyEvidence, diagnoseLowContent, extractEmbeddedText, extractPage, parsePriceCard } from '../server/research/extract.ts';
 import type { PriceCard } from '../server/research/extract.ts';
 
 const card = (lines: string[], heading: string | null): PriceCard => ({ lines, heading, snippet: lines.join(' ') });
@@ -83,6 +83,56 @@ describe('extractPage', () => {
   it('ignores prices buried in long marketing copy', () => {
     const page = extractPage(`<body><h2>Story</h2><p>${'We grew fast. '.repeat(30)} Customers saved $5 last year.</p></body>`, 'https://example.com/pricing');
     assert.equal(page.priceCards.length, 0);
+  });
+});
+
+describe('content that used to be lost', () => {
+  it('keeps the page after a Declarative Shadow DOM template (Linear-style markup)', () => {
+    const page = extractPage(
+      `<body><h1>Pricing</h1><section><h3>Basic</h3><span aria-hidden="true"><number-flow-react aria-label="$10 per user/month">
+         <template shadowroot="open" shadowrootmode="open"><style>:host{display:inline-block}span{display:inline-block}</style></template></number-flow-react></span>
+         <span>$10 per user/month</span></section>
+         <section><h3>Business</h3><span>$16 per user/month</span></section></body>`,
+      'https://example.com/pricing',
+    );
+    // Both plans after the template are parsed; each card is the plan section (heading + visible price).
+    assert.deepEqual(page.priceCards.map((c) => [c.heading, c.snippet]), [
+      ['Basic', 'Basic $10 per user/month'],
+      ['Business', 'Business $16 per user/month'],
+    ]);
+    assert.ok(!page.corpus.includes(':host'), 'template styles are not treated as text');
+  });
+});
+
+describe('diagnoseLowContent', () => {
+  const diagnose = (html: string) => diagnoseLowContent(html, extractPage(html, 'https://example.com/')).reason;
+  it('recognises bot checks and access-denied pages', () => {
+    assert.equal(diagnose('<html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>'), 'blocked');
+  });
+  it('recognises error pages', () => {
+    assert.equal(diagnose('<html><head><title>404 Not Found</title></head><body>Missing</body></html>'), 'error_page');
+  });
+  it('recognises JavaScript app shells without calling every short page an SPA', () => {
+    assert.equal(diagnose('<html><body><div id="root"></div><script src="/a.js"></script></body></html>'), 'client_rendered');
+    assert.equal(diagnose('<html><head><title>Acme</title></head><body><p>Coming soon.</p></body></html>'), 'empty');
+  });
+});
+
+describe('extractEmbeddedText', () => {
+  it('reads human-readable strings from JSON-LD and embedded JSON only', () => {
+    const html = `<script type="application/ld+json">{"@type":"Product","name":"Acme Team plan","offers":{"price":"12","priceCurrency":"USD","description":"$12 per user/month"}}</script>
+      <script id="__NEXT_DATA__" type="application/json">{"props":{"plan":"Team plan for growing companies","css":"a{b:c}","url":"https://x.test/a"}}</script>
+      <script>globalThis.embeddedRan = true; var s = "Executable script text";</script>`;
+    const strings = extractEmbeddedText(html);
+    assert.ok(strings.includes('Acme Team plan'));
+    assert.ok(strings.includes('$12 per user/month'));
+    assert.ok(strings.includes('Team plan for growing companies'));
+    assert.ok(!strings.some((s) => s.includes('Executable script text')), 'plain scripts are not read');
+    assert.ok(!strings.some((s) => s.startsWith('https://') || s.includes('{')), 'URLs and code-like strings are skipped');
+    assert.equal((globalThis as { embeddedRan?: boolean }).embeddedRan, undefined, 'nothing is executed');
+  });
+  it('ignores malformed embedded JSON', () => {
+    assert.deepEqual(extractEmbeddedText('<script type="application/ld+json">{not json</script>'), []);
   });
 });
 

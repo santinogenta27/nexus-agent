@@ -61,12 +61,14 @@ Research status is **Live** (all sources retrieved), **Partial** (some failed/em
 
 ## Limits
 
-- Run budget 45 s; LLM calls are sized to fit (Supervisor 12 s, Synthesizer 18 s, judge 10 s); 500/503 retried twice (2 s, 4 s) if time remains; local 15 RPM / 1,500 RPD guard.
+- Run budget 90 s; LLM calls are capped by their own limit and the time left (Supervisor 12 s, Synthesizer 30 s, judge 30 s, model background 15 s); 500/503 retried twice (2 s, 4 s) if time remains; local 15 RPM / 1,500 RPD guard.
+- HTTP 429 (quota exhausted) is never retried: further Gemini calls are skipped for 60 s and the affected steps fall back.
 - Cost uses reference list prices ($0.30 / $2.50 per 1M input/output tokens); Free Tier usage is billed $0.
 
 ## Known limitations
 
-- Client-rendered pages (little HTML text) are reported as `empty`; their content is not available without a browser.
+- Pages with too little readable text are diagnosed (blocked, error page, built by JavaScript, empty). Recovery tries structured data embedded in the page (JSON-LD / JSON, parsed, never executed), then one untried internal link or `sitemap.xml` entry of the same kind. JavaScript is never executed, so purely client-rendered content may stay unavailable.
+- If key pages remain unreadable, Gemini may add general background from its own knowledge. It is shown separately as unverified, has no citations, supports no finding, and sentences with figures are removed.
 - robots.txt is not consulted.
 - Same-site detection uses the last two host labels, so multi-part TLDs (e.g. `.co.uk`) may limit page discovery.
 - Price extraction is pattern-based; plan names are a heuristic and billing periods may be `unknown` (e.g. per-transaction pricing).
