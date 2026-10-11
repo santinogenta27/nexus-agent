@@ -1,5 +1,9 @@
 
-https://github.com/santinogenta27/nexus-agent/releases/download/v1.0.0/nexus-agent-demo.mp4.mp4
+<div align="center">
+  <video src="https://github.com/santinogenta27/nexus-agent/releases/download/v1.0.0/nexus-agent-demo.mp4.mp4" controls="controls" width="100%" style="max-width: 1000px;">
+    Your browser does not support the video tag.
+  </video>
+</div>
 
 
 
