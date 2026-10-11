@@ -1,3 +1,10 @@
+
+https://github.com/santinogenta27/nexus-agent/releases/download/v1.0.0/nexus-agent-demo.mp4.mp4
+
+
+
+
+
 # ⚡ NexusAgent — Autonomous Multi-Agent Deep Research System
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
