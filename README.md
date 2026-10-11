@@ -1,14 +1,3 @@
-
-<div align="center">
-  <video src="https://github.com/santinogenta27/nexus-agent/releases/download/v1.0.0/nexus-agent-demo.mp4.mp4" controls="controls" width="100%" style="max-width: 1000px;">
-    Your browser does not support the video tag.
-  </video>
-</div>
-
-
-
-
-
 # ⚡ NexusAgent — Autonomous Multi-Agent Deep Research System
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
@@ -23,7 +12,7 @@
 
 🌐 **Live Demo (Production):** [https://nexus-agent-rub3.onrender.com](https://nexus-agent-rub3.onrender.com)
 💻 **GitHub Repository:** [https://github.com/santinogenta27/nexus-agent](https://github.com/santinogenta27/nexus-agent)
-
+**Demo:** https://youtu.be/h7WO4Wd5TJY
 ---
 
 ## 🏗️ Multi-Agent Architecture (DAG)
